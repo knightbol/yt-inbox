@@ -1,0 +1,34 @@
+# Python build and test files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# Personal subscriptions, runtime state and credentials
+channels.txt
+settings.json
+*.sqlite*
+*.db
+*.db-*
+*.lock
+*.log
+.env
+.env.*
+!.env.example
+
+# Local editor and OS files
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
+
+# Release archives are generated separately
+*.tar.gz
+*.zip
