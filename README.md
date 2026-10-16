@@ -9,7 +9,7 @@ get one daily upload notification, and keep a finite list of unwatched videos.
 
 ## Project status
 
-This is an early personal project. The 16 automated tests passed during development,
+This is an early personal project. The 25 automated tests passed during development,
 and channel resolution and upload retrieval were checked against a live YouTube
 channel. Native KDE notification display and mpv playback still need end-to-end
 verification on an Arch Linux desktop. See **Limits** below for known constraints.
@@ -34,6 +34,16 @@ Run the installer as your normal user, without sudo. It installs only for your
 account, enables a daily user timer and adds **YouTube Inbox** to your application
 launcher. If `~/.local/bin` is already in PATH, `yt-inbox` works from any directory.
 Reinstalling preserves all channels, settings and watched/skipped history.
+
+## Updating an existing installation
+
+Close the inbox, download and extract the latest repository ZIP, then run
+`bash install.sh` from the newly extracted directory. Reopen the inbox and select
+**Check now**. There is no need to delete the database or re-enter your channels.
+Check the installed version with `~/.local/bin/yt-inbox --version`.
+
+Version **1.0.1** adds an upload-list fallback for YouTube feed errors. The original
+1.0.0 installer/archive does not contain this fix; use a fresh download.
 
 ## First use
 
@@ -65,6 +75,10 @@ inbox window.
   (normally within about 90 seconds) or after resume. The computer is not woken up.
 - A failed check retries after 15 minutes. Already successful channels are skipped
   on retries within that daily cycle. Errors are shown in the inbox.
+- If a channel feed returns HTTP 404 or a server error, the app uses yt-dlp to read
+  its 15 most recent uploads. This fallback can take longer, especially on the
+  first check. Each channel has a two-minute fallback budget; completed video
+  lookups are saved and unfinished ones can continue on the next check.
 - One notification per local calendar day when there are newly discovered,
   still-unwatched videos. It includes up to three titles and an **Open inbox** action.
 - Unwatched videos remain until you watch or skip them. They are not discarded
@@ -141,22 +155,29 @@ python3 ~/.local/share/yt-inbox/app/install.py --uninstall
 ## Limits
 
 YouTube's public feeds expose a limited recent upload window, not a complete
-archive. A long offline period or a very busy channel can therefore leave gaps.
+archive. The fallback also reads at most 15 uploads. A long offline period or a
+very busy channel can therefore leave gaps.
 This version does not backfill an entire channel or guarantee every upload.
 Shorts/live announcements can appear; video-type filtering is not implemented.
 Deleted, private or unavailable uploads may fail to play. Watching somewhere else
 does not update this local inbox; no YouTube account history is read.
 
 Feeds and channel resolution can temporarily fail or change upstream. Failures
-are retained and retried; a failed fetch never clears the queue. Keep Arch's
-yt-dlp and deno packages current if playback stops working. Restricted videos can
+are retained and retried; a failed fetch never clears the queue. A 404 from the
+feed alone does not prove that the channel link is wrong. The fallback uses exact
+publication times for newly discovered videos; if that metadata is unavailable,
+the video is retried instead of being silently treated as an old upload. It does
+not retry HTTP access denials or rate limits through a different endpoint.
+Keep Arch's yt-dlp and deno packages current if fetching or playback stops working. Restricted videos can
 require watching in your signed-in browser; this app does not read browser cookies.
 
 ## Verification
 
 The package includes deterministic tests for feed ingestion, deduplication,
 baseline handling, status persistence, retry cycles, channel removal/re-addition,
-notification delivery/action handling and isolated installation. Run:
+notification delivery/action handling and isolated installation. Regression tests
+cover feed outages, fallback ownership validation, partial progress, exact-date
+handling and recovery without resetting watched/skipped history. Run:
 
 ```sh
 python3 -m unittest discover -s tests -v
@@ -167,5 +188,5 @@ notification rendering and mpv streaming still depend on your local session and
 network; they cannot be established by fixture tests alone.
 
 Built with Python's standard library plus PySide6. Uses YouTube Atom feeds,
-yt-dlp for channel resolution fallback, mpv for streaming, and libnotify/systemd
+yt-dlp for channel resolution and upload-list fallback, mpv for streaming, and libnotify/systemd
 for desktop notifications and scheduling. No API key or subscription required.

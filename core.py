@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import html.parser
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -15,12 +16,15 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
+RECENT_UPLOADS = 15
+FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")
 VIDEO_RE = re.compile(r"[A-Za-z0-9_-]{11}\Z")
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -279,7 +283,101 @@ def parse_feed(raw, channel_id):
     return name, entries
 
 
-def ingest(db, channel_id, name, entries, now, cycle=None):
+def ytdlp_json(url, options, timeout=60):
+    """Read public metadata only, ignoring user config and never loading cookies."""
+    if not shutil.which("yt-dlp"):
+        raise InboxError("Install yt-dlp to use the upload-list fallback.")
+    try:
+        result = subprocess.run([
+            "yt-dlp", "--ignore-config", "--dump-single-json", "--skip-download",
+            "--no-warnings", "--socket-timeout", "10", "--retries", "0",
+            "--extractor-retries", "0", *options, "--", url,
+        ], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise InboxError("YouTube metadata lookup timed out; it will be retried.") from exc
+    if result.returncode:
+        raise InboxError(result.stderr.strip()[-450:] or "YouTube metadata lookup failed.")
+    try:
+        data = json.loads(result.stdout)
+        if not isinstance(data, dict):
+            raise ValueError("expected an object")
+    except (ValueError, TypeError) as exc:
+        raise InboxError("yt-dlp returned invalid upload metadata.") from exc
+    return data
+
+
+def fallback_uploads(channel_id, known, channel_name):
+    """Return recent uploads and any errors, retaining successful partial results.
+
+    Flat playlists have no exact publication times. Reuse stored dates for known
+    IDs; retrieve precise metadata for new IDs instead of guessing relative dates.
+    A time budget bounds each channel's work. Successful entries are saved even if
+    another lookup fails, so a later retry only needs the remaining metadata.
+    """
+    deadline = time.monotonic() + FALLBACK_SECONDS
+    playlist_id = "UU" + channel_id[2:]
+    data = ytdlp_json("https://www.youtube.com/playlist?list=" + playlist_id,
+                       ["--flat-playlist", "--playlist-end", str(RECENT_UPLOADS)])
+    if data.get("id") != playlist_id or data.get("channel_id") not in (None, channel_id):
+        raise InboxError("The upload list belongs to a different channel.")
+    rows = data.get("entries")
+    if not isinstance(rows, list):
+        raise InboxError("YouTube did not return an upload list.")
+    name = data.get("channel") or channel_name
+    entries, errors = [], []
+    seen = set()
+    for item in rows[:RECENT_UPLOADS]:
+        try:
+            if not isinstance(item, dict):
+                raise InboxError("An upload could not be read.")
+            video_id = item.get("id")
+            if not isinstance(video_id, str) or not VIDEO_RE.fullmatch(video_id):
+                raise InboxError("An upload has an invalid video ID.")
+            if item.get("channel_id") not in (None, channel_id):
+                raise InboxError("An upload belongs to a different channel.")
+            if video_id in seen:
+                continue
+            seen.add(video_id)
+            if video_id in known:
+                published = known[video_id]["published"]
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    errors.append("Upload lookup time limit reached; remaining videos will be retried.")
+                    break
+                details = ytdlp_json(video_url(video_id), [
+                    "--no-playlist", "--ignore-no-formats-error", "--extractor-args",
+                    "youtube:player_client=web;player_skip=js,configs;skip=hls,dash",
+                ], timeout=min(60, remaining))
+                if details.get("id") != video_id or details.get("channel_id") != channel_id:
+                    raise InboxError("Video metadata belongs to a different video or channel.")
+                published = details.get("release_timestamp") or details.get("timestamp")
+                if type(published) not in (int, float) or not math.isfinite(published) or published <= 0:
+                    raise InboxError(f"Publication time unavailable for {video_id}; it will be retried.")
+            entries.append({"id": video_id, "title": item.get("title") or "Untitled video", "published": published})
+        except (InboxError, OSError) as exc:
+            errors.append(str(exc))
+    return name, entries, errors
+
+
+def read_uploads(channel_id, known, channel_name, fetcher=fetch):
+    try:
+        name, entries = parse_feed(fetcher("https://www.youtube.com/feeds/videos.xml?channel_id=" + channel_id), channel_id)
+        return name, entries, []
+    except urllib.error.HTTPError as exc:
+        # Active channels can return 404/5xx from RSS while their upload lists work.
+        # Do not retry access denials or rate limits through another endpoint.
+        if exc.code != 404 and not 500 <= exc.code < 600:
+            raise
+        feed_error = f"YouTube feed unavailable (HTTP {exc.code})"
+    try:
+        name, entries, errors = fallback_uploads(channel_id, known, channel_name)
+        return name, entries, [feed_error + "; " + error for error in errors]
+    except (InboxError, OSError) as exc:
+        raise InboxError(feed_error + "; upload-list fallback: " + str(exc)) from exc
+
+
+def ingest(db, channel_id, name, entries, now, cycle=None, complete=True):
     channel = db.execute("SELECT * FROM channels WHERE id=?", (channel_id,)).fetchone()
     new_count = 0
     with db:
@@ -292,7 +390,10 @@ def ingest(db, channel_id, name, entries, now, cycle=None):
             else:
                 db.execute("INSERT INTO videos VALUES (?,?,?,?,?,?,?,?)", (item["id"], channel_id, item["title"], item["published"], now, status, int(status == "baseline"), now))
                 new_count += int(status == "pending")
-        db.execute("UPDATE channels SET name=?,last_check=?,error='',last_cycle=COALESCE(?,last_cycle) WHERE id=?", (name, now, cycle, channel_id))
+        if complete:
+            db.execute("UPDATE channels SET name=?,last_check=?,error='',last_cycle=COALESCE(?,last_cycle) WHERE id=?", (name, now, cycle, channel_id))
+        else:
+            db.execute("UPDATE channels SET name=? WHERE id=?", (name, channel_id))
     return new_count
 
 
@@ -347,8 +448,11 @@ def run_check(paths, scheduled=False, now=None, fetcher=fetch, resolver=resolve_
                 if scheduled and row["last_cycle"] == cycle and not row["error"]:
                     continue
                 try:
-                    name, entries = parse_feed(fetcher("https://www.youtube.com/feeds/videos.xml?channel_id=" + cid), cid)
-                    added += ingest(db, cid, name, entries, now, cycle)
+                    known = {r["id"]: r for r in db.execute("SELECT id,published FROM videos WHERE channel_id=?", (cid,))}
+                    name, entries, upload_errors = read_uploads(cid, known, row["name"], fetcher)
+                    added += ingest(db, cid, name, entries, now, cycle, complete=not upload_errors)
+                    if upload_errors:
+                        raise InboxError("; ".join(upload_errors)[:800])
                     checked += 1
                 except Exception as exc:
                     errors.append(f"{row['name']}: {exc}")

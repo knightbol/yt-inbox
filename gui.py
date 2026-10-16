@@ -251,7 +251,7 @@ class Window(QMainWindow):
             db.close()
         when = dt.datetime.fromtimestamp(float(last)).strftime("%d %b, %H:%M") if last else "not checked yet"
         self.summary.setText(f"{count} unwatched · {channels} channel{'s' if channels != 1 else ''} · Last complete check: {when}")
-        self.warning.setText("Some channels could not be checked. Open Channels to verify the links, or try Check now.\n" + errors[:800] if errors else "")
+        self.warning.setText("Some channels could not be checked. Try Check now; scheduled checks retry automatically.\n" + errors[:800] if errors else "")
         self.warning.setVisible(bool(errors))
         self.empty.setVisible(not self.rows)
         if not self.rows:

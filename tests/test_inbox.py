@@ -1,10 +1,12 @@
 import datetime as dt
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 from xml.sax.saxutils import escape
 
@@ -102,6 +104,145 @@ class InboxTests(unittest.TestCase):
         self.assertTrue(self.check()["errors"])
         self.feeds[C1] = feed(C1, [(V2, "Published during outage", T0 + 60)])
         self.assertEqual(self.check(T0 + 3600)["new"], 1)
+
+    def unavailable_feed(self, code=404):
+        self.feeds[C1] = urllib.error.HTTPError(
+            "https://www.youtube.com/feeds/videos.xml?channel_id=" + C1,
+            code, "Feed unavailable", {}, None)
+
+    def upload_list(self, ids):
+        return {"id": "UU" + C1[2:], "channel_id": C1, "channel": "Test channel",
+                "entries": [{"id": vid, "channel_id": C1, "title": "Upload " + vid} for vid in ids]}
+
+    def video_info(self, vid, stamp):
+        return {"id": vid, "channel_id": C1, "timestamp": stamp}
+
+    def test_rss_failures_use_fallback_and_reuse_known_dates(self):
+        self.add_new()
+        core.set_status(self.paths, [V2], "watched")
+        for code in (404, 500, 502, 503, 504):
+            with self.subTest(code=code):
+                self.unavailable_feed(code)
+                with patch("core.ytdlp_json", return_value=self.upload_list([V2, V1])) as metadata:
+                    result = self.check(T0 + 120)
+                self.assertFalse(result["errors"])
+                self.assertEqual(result["checked"], 1)
+                self.assertEqual(result["new"], 0)
+                self.assertEqual(metadata.call_count, 1)  # No video requests for known IDs.
+                self.assertFalse(core.queue_rows(self.paths))
+                self.assertEqual(core.queue_rows(self.paths, "watched")[0]["id"], V2)
+
+    def test_fallback_adds_new_upload_and_rss_recovery_does_not_duplicate(self):
+        self.add_new()
+        core.set_status(self.paths, [V2], "skipped")
+        self.unavailable_feed()
+        with patch("core.ytdlp_json", side_effect=[self.upload_list([V3, V2, V1]), self.video_info(V3, T0 + 90)]):
+            result = self.check(T0 + 120)
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["new"], 1)
+        self.assertEqual(core.queue_rows(self.paths)[0]["id"], V3)
+        core.set_status(self.paths, [V3], "watched")
+        self.feeds[C1] = feed(C1, [(V3, "Exact feed title", T0 + 90), (V2, "Skipped", T0 + 30)])
+        with patch("core.ytdlp_json") as metadata:
+            self.assertEqual(self.check(T0 + 180)["new"], 0)
+            metadata.assert_not_called()
+        self.assertFalse(core.queue_rows(self.paths))
+        self.assertEqual(core.queue_rows(self.paths, "watched")[0]["id"], V3)
+        self.assertEqual(core.queue_rows(self.paths, "skipped")[0]["id"], V2)
+
+    def test_fallback_after_initial_failure_keeps_original_tracking_time(self):
+        self.feeds[C1] = OSError("offline")
+        self.check(T0)
+        self.unavailable_feed()
+        with patch("core.ytdlp_json", side_effect=[self.upload_list([V2, V1]),
+                   self.video_info(V2, T0 + 60), self.video_info(V1, T0 - 86400)]):
+            result = self.check(T0 + 3600)
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["new"], 1)
+        self.assertEqual([r["id"] for r in core.queue_rows(self.paths)], [V2])
+
+    def test_incomplete_fallback_saves_progress_and_retries_missing_dates(self):
+        self.check(scheduled=True)
+        self.unavailable_feed()
+        no_exact_time = {"id": V3, "channel_id": C1, "upload_date": "20261016"}
+        with patch("core.ytdlp_json", side_effect=[self.upload_list([V3, V2, V1]),
+                   no_exact_time, self.video_info(V2, T0 + 60)]):
+            result = self.check(T0 + 86400, scheduled=True)
+        self.assertEqual(result["new"], 1)
+        self.assertEqual(result["checked"], 0)
+        self.assertIn("Publication time unavailable", result["errors"][0])
+        db = core.connect(self.paths)
+        self.assertEqual(db.execute("SELECT last_check FROM channels WHERE id=?", (C1,)).fetchone()[0], T0)
+        self.assertEqual(core.meta_get(db, "last_success"), str(T0))
+        db.close()
+        with patch("core.ytdlp_json", side_effect=[self.upload_list([V3, V2, V1]),
+                   self.video_info(V3, T0 + 90)]) as metadata:
+            result = self.check(T0 + 86460, scheduled=True)
+        self.assertEqual(metadata.call_count, 2)
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["new"], 1)
+        self.assertEqual(result["checked"], 1)
+        with patch("core.ytdlp_json") as metadata:
+            self.check(T0 + 86520, scheduled=True)
+            metadata.assert_not_called()
+
+    def test_fallback_does_not_bypass_access_denials_or_rate_limits(self):
+        self.add_new()
+        for code in (401, 403, 429):
+            with self.subTest(code=code):
+                self.unavailable_feed(code)
+                with patch("core.ytdlp_json") as metadata:
+                    result = self.check(T0 + 120)
+                    metadata.assert_not_called()
+                self.assertTrue(result["errors"])
+                self.assertEqual(core.queue_rows(self.paths)[0]["id"], V2)
+
+    def test_fallback_rejects_wrong_channel_and_wrong_video_metadata(self):
+        self.check()
+        self.unavailable_feed()
+        wrong_list = self.upload_list([V2])
+        wrong_list["channel_id"] = C2
+        cases = [[wrong_list],
+                 [self.upload_list([V2]), {"id": V2, "channel_id": C2, "timestamp": T0 + 60}],
+                 [self.upload_list([V2]), self.video_info(V3, T0 + 60)]]
+        for responses in cases:
+            with self.subTest(responses=responses), patch("core.ytdlp_json", side_effect=responses):
+                result = self.check(T0 + 120)
+                self.assertTrue(result["errors"])
+                self.assertFalse(core.queue_rows(self.paths))
+
+    def test_fallback_time_budget_preserves_partial_results(self):
+        with patch("core.time.monotonic", side_effect=[0, 1, core.FALLBACK_SECONDS + 1]), \
+             patch("core.ytdlp_json", side_effect=[self.upload_list([V2, V3]), self.video_info(V2, T0 + 60)]):
+            name, entries, errors = core.fallback_uploads(C1, {}, "Test channel")
+        self.assertEqual([e["id"] for e in entries], [V2])
+        self.assertIn("time limit", errors[0])
+
+    def test_missing_or_failing_ytdlp_preserves_queue(self):
+        self.add_new()
+        self.unavailable_feed()
+        with patch("core.shutil.which", return_value=None):
+            result = self.check(T0 + 120)
+        self.assertIn("Install yt-dlp", result["errors"][0])
+        failures = [subprocess.TimeoutExpired("yt-dlp", 60),
+                    subprocess.CompletedProcess([], 1, "", "Metadata unavailable"),
+                    subprocess.CompletedProcess([], 0, "not JSON", "")]
+        for failure in failures:
+            with self.subTest(failure=failure), patch("core.shutil.which", return_value="yt-dlp"), \
+                 patch("core.subprocess.run", side_effect=[failure]):
+                result = self.check(T0 + 120)
+                self.assertTrue(result["errors"])
+                self.assertEqual(core.queue_rows(self.paths)[0]["id"], V2)
+
+    def test_ytdlp_metadata_calls_do_not_download_media_or_load_user_config(self):
+        output = subprocess.CompletedProcess([], 0, json.dumps(self.upload_list([])), "")
+        with patch("core.shutil.which", return_value="yt-dlp"), patch("core.subprocess.run", return_value=output) as run:
+            self.assertEqual(core.ytdlp_json("https://www.youtube.com/playlist?list=UU" + C1[2:], ["--flat-playlist"])["entries"], [])
+        args = run.call_args.args[0]
+        self.assertIn("--ignore-config", args)
+        self.assertIn("--skip-download", args)
+        self.assertIn("--", args)
+        self.assertLessEqual(run.call_args.kwargs["timeout"], core.FALLBACK_SECONDS)
 
     def test_remove_readd_preserves_watched_history(self):
         self.add_new()
