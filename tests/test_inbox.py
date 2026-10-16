@@ -53,13 +53,16 @@ class InboxTests(unittest.TestCase):
         return core.run_check(self.paths, now=now, scheduled=scheduled, fetcher=self.fetch)
 
     def add_new(self):
+        # Begin with an empty channel so these tests focus on a later new upload.
+        self.feeds[C1] = feed(C1, [])
         self.check()
         self.feeds[C1] = feed(C1, [(V1, "Old upload", T0 - 86400), (V2, "New upload", T0 + 30)])
         self.check(T0 + 60)
 
     def test_baseline_and_id_dedup_survive_title_changes(self):
-        self.assertEqual(self.check()["new"], 0)
-        self.assertEqual(core.queue_rows(self.paths), [])
+        self.assertEqual(self.check()["new"], 1)
+        self.assertEqual(core.queue_rows(self.paths)[0]["id"], V1)
+        core.set_status(self.paths, [V1], "watched")
         self.feeds[C1] = feed(C1, [(V1, "Old, renamed", T0 - 86400), (V2, "New upload", T0 + 30)])
         self.assertEqual(self.check(T0 + 60)["new"], 1)
         core.set_status(self.paths, [V2], "watched")
@@ -67,6 +70,82 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(self.check(T0 + 120)["new"], 0)
         self.assertEqual(core.queue_rows(self.paths), [])
         self.assertEqual(core.queue_rows(self.paths, "watched")[0]["title"], "New, renamed")
+
+    def test_only_latest_existing_video_is_added_once(self):
+        # Feed order is not necessarily publication order.
+        videos = [(V1, "Oldest", T0 - 86400), (V2, "Latest", T0 - 60), (V3, "Middle", T0 - 3600)]
+        self.feeds[C1] = feed(C1, videos)
+        self.assertEqual(self.check()["new"], 1)
+        self.assertEqual([r["id"] for r in core.queue_rows(self.paths)], [V2])
+        core.set_status(self.paths, [V2], "skipped")
+        self.assertEqual(self.check(T0 + 60)["new"], 0)
+        # Neither a shorter feed nor removing/re-adding the channel loads older videos.
+        self.feeds[C1] = feed(C1, [videos[0], videos[2]])
+        self.assertEqual(self.check(T0 + 120)["new"], 0)
+        self.paths.channels.write_text("")
+        self.check(T0 + 180)
+        self.paths.channels.write_text(C1)
+        self.feeds[C1] = feed(C1, videos)
+        self.assertEqual(self.check(T0 + 240)["new"], 0)
+        self.assertFalse(core.queue_rows(self.paths))
+        self.assertEqual(core.queue_rows(self.paths, "skipped")[0]["id"], V2)
+
+    def legacy_channel(self, latest_status="baseline"):
+        """Populate the persisted state written by 1.0.0/1.0.1."""
+        db = core.connect(self.paths)
+        with db:
+            db.execute("INSERT INTO channels(id,name,added_at,last_check) VALUES (?,?,?,?)", (C1, "Existing channel", T0, T0))
+            for vid, stamp, status in ((V1, T0 - 86400, "baseline"), (V2, T0 - 60, latest_status)):
+                db.execute("INSERT INTO videos VALUES (?,?,?,?,?,?,?,?)", (vid, C1, "Existing upload", stamp, T0, status, 1, T0))
+        db.close()
+        self.feeds[C1] = feed(C1, [(V1, "Older", T0 - 86400), (V2, "Latest", T0 - 60)])
+
+    def test_upgrade_adds_cached_latest_and_makes_it_eligible_for_digest(self):
+        self.legacy_channel()
+        self.assertFalse(core.queue_rows(self.paths))
+        self.assertEqual(self.check(T0 + 60)["new"], 1)
+        self.assertEqual([r["id"] for r in core.queue_rows(self.paths)], [V2])
+        db = core.connect(self.paths)
+        self.assertEqual([r["id"] for r in core.notify_candidates(db)], [V2])
+        self.assertEqual(db.execute("SELECT status FROM videos WHERE id=?", (V1,)).fetchone()[0], "baseline")
+        db.close()
+        self.assertEqual(self.check(T0 + 120)["new"], 0)
+
+    def test_upgrade_preserves_watched_or_skipped_latest_without_loading_older(self):
+        for status in ("watched", "skipped"):
+            with self.subTest(status=status):
+                root = self.root / status
+                self.paths = core.Paths(root / "config", root / "data", root / "state")
+                self.paths.ensure()
+                self.paths.channels.write_text(C1)
+                self.legacy_channel(status)
+                self.assertEqual(self.check(T0 + 60)["new"], 0)
+                self.assertFalse(core.queue_rows(self.paths))
+                self.assertEqual(core.queue_rows(self.paths, status)[0]["id"], V2)
+                self.feeds[C1] = feed(C1, [(V1, "Older", T0 - 86400)])
+                self.assertEqual(self.check(T0 + 120)["new"], 0)
+                self.assertFalse(core.queue_rows(self.paths))
+
+    def test_partial_fallback_waits_for_latest_before_starting_inbox(self):
+        self.unavailable_feed()
+        missing_date = {"id": V2, "channel_id": C1}
+        with patch("core.ytdlp_json", side_effect=[self.upload_list([V2, V1]), missing_date, self.video_info(V1, T0 - 86400)]):
+            result = self.check()
+        self.assertTrue(result["errors"])
+        self.assertEqual(result["new"], 0)
+        self.assertFalse(core.queue_rows(self.paths))
+        with patch("core.ytdlp_json", side_effect=[self.upload_list([V2, V1]), self.video_info(V2, T0 - 60)]):
+            result = self.check(T0 + 60)
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["new"], 1)
+        self.assertEqual([r["id"] for r in core.queue_rows(self.paths)], [V2])
+
+    def test_latest_video_is_selected_independently_per_channel(self):
+        self.paths.channels.write_text(C1 + "\n" + C2)
+        self.feeds[C2] = feed(C2, [(V2, "Older", T0 - 3600), (V3, "Latest", T0 - 60)])
+        self.assertEqual(self.check()["new"], 2)
+        self.assertEqual({r["id"] for r in core.queue_rows(self.paths)}, {V1, V3})
+        self.assertEqual(self.check(T0 + 60)["new"], 0)
 
     def test_status_undo_is_durable(self):
         self.add_new()
@@ -84,6 +163,7 @@ class InboxTests(unittest.TestCase):
     def test_failed_fetch_preserves_queue_and_retries_same_cycle(self):
         self.paths.channels.write_text(C1 + "\n" + C2 + "\n")
         self.check(scheduled=True)
+        core.set_status(self.paths, [V1], "watched")
         self.feeds[C1] = feed(C1, [(V2, "New", T0 + 60)])
         self.feeds[C2] = OSError("offline")
         result = self.check(T0 + 86400, scheduled=True)
@@ -209,7 +289,7 @@ class InboxTests(unittest.TestCase):
             with self.subTest(responses=responses), patch("core.ytdlp_json", side_effect=responses):
                 result = self.check(T0 + 120)
                 self.assertTrue(result["errors"])
-                self.assertFalse(core.queue_rows(self.paths))
+                self.assertEqual([r["id"] for r in core.queue_rows(self.paths)], [V1])
 
     def test_fallback_time_budget_preserves_partial_results(self):
         with patch("core.time.monotonic", side_effect=[0, 1, core.FALLBACK_SECONDS + 1]), \

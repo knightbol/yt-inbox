@@ -9,7 +9,7 @@ get one daily upload notification, and keep a finite list of unwatched videos.
 
 ## Project status
 
-This is an early personal project. The 25 automated tests passed during development,
+This is an early personal project. Automated tests cover the inbox and its interface,
 and channel resolution and upload retrieval were checked against a live YouTube
 channel. Native KDE notification display and mpv playback still need end-to-end
 verification on an Arch Linux desktop. See **Limits** below for known constraints.
@@ -42,15 +42,19 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
-Version **1.0.1** adds an upload-list fallback for YouTube feed errors. The original
-1.0.0 installer/archive does not contain this fix; use a fresh download.
+Version **1.0.2** includes each channel's latest published video on its first complete
+check, even if that upload predates tracking. Existing channels get this once after
+updating and selecting **Check now**. Watched and skipped videos retain their status.
+The upload-list fallback introduced in 1.0.1 is also included; use a fresh download.
 
 ## First use
 
 1. Select **Channels**, paste one channel URL or `@handle` per line, then Save.
-2. The first successful check establishes each channel's current uploads. Uploads
-   published before tracking began are excluded. An empty first inbox is expected.
-3. New uploads appear after **Check now** or the next daily check.
+2. The first complete check adds each channel's latest published video to Unwatched,
+   even if it was uploaded before you added the channel. Other older uploads stay
+   out of the inbox. A partial check finishes this step when its remaining lookups succeed.
+3. New uploads appear after **Check now** or the next daily check. The starting video
+   is added only once per channel; watching or skipping it keeps it out of Unwatched.
 4. Select a video and choose **Play in mpv** or **Open in browser**. Its direct link
    appears below the list and can be copied.
 5. Select **Mark watched** when finished, or **Skip** to dismiss it. Both remove it
@@ -174,7 +178,7 @@ require watching in your signed-in browser; this app does not read browser cooki
 ## Verification
 
 The package includes deterministic tests for feed ingestion, deduplication,
-baseline handling, status persistence, retry cycles, channel removal/re-addition,
+latest-video inclusion, baseline handling, status persistence, retry cycles, channel removal/re-addition,
 notification delivery/action handling and isolated installation. Regression tests
 cover feed outages, fallback ownership validation, partial progress, exact-date
 handling and recovery without resetting watched/skipped history. Run:

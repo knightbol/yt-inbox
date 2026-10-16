@@ -22,14 +22,14 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")
 VIDEO_RE = re.compile(r"[A-Za-z0-9_-]{11}\Z")
 ATOM = "{http://www.w3.org/2005/Atom}"
 YT = "{http://www.youtube.com/xml/schemas/2015}"
-DEFAULT_CHANNELS = "# One YouTube channel URL or @handle per line.\n# New uploads are tracked from the first check after adding a channel.\n# Example: https://www.youtube.com/@TechnologyConnections\n"
+DEFAULT_CHANNELS = "# One YouTube channel URL or @handle per line.\n# Start with each channel's latest video, then track new uploads.\n# Example: https://www.youtube.com/@TechnologyConnections\n"
 
 
 class InboxError(Exception):
@@ -391,6 +391,20 @@ def ingest(db, channel_id, name, entries, now, cycle=None, complete=True):
                 db.execute("INSERT INTO videos VALUES (?,?,?,?,?,?,?,?)", (item["id"], channel_id, item["title"], item["published"], now, status, int(status == "baseline"), now))
                 new_count += int(status == "pending")
         if complete:
+            # Include one starting video for new channels and upgrades from older
+            # versions. Wait for a complete snapshot so partial fallback metadata
+            # cannot select an older video while the newest is still unresolved.
+            seed_key = "latest_video_shown:" + channel_id
+            if not meta_get(db, seed_key):
+                latest = max((item for item in entries if item["published"] <= now),
+                             key=lambda item: (item["published"], item["id"]), default=None)
+                if latest:
+                    new_count += db.execute(
+                        "UPDATE videos SET status='pending',notified=0,changed=? "
+                        "WHERE id=? AND channel_id=? AND status='baseline'",
+                        (now, latest["id"], channel_id)).rowcount
+                    # Explicit watched/skipped states count as handled as well.
+                    meta_set(db, seed_key, "1")
             db.execute("UPDATE channels SET name=?,last_check=?,error='',last_cycle=COALESCE(?,last_cycle) WHERE id=?", (name, now, cycle, channel_id))
         else:
             db.execute("UPDATE channels SET name=? WHERE id=?", (name, channel_id))

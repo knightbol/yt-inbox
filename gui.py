@@ -39,7 +39,7 @@ class ChannelsDialog(QDialog):
         self.editor = QPlainTextEdit(paths.channels.read_text(encoding="utf-8"))
         self.editor.setPlaceholderText("https://www.youtube.com/@TechnologyConnections\n@YourOtherChannel")
         layout.addWidget(self.editor)
-        note = QLabel("Tracking begins with the first check after you add a channel. Older uploads stay out of the inbox.")
+        note = QLabel("The first complete check adds each channel's latest video. New uploads are tracked after that.")
         note.setWordWrap(True)
         layout.addWidget(note)
         self.error = QLabel("")
@@ -260,7 +260,7 @@ class Window(QMainWindow):
             elif not channels:
                 text = "Add your favourite channels, then check for uploads."
             elif state == "pending":
-                text = "Nothing waiting. New uploads will appear here after the next check.\nOlder uploads are excluded when a channel is first added."
+                text = "Nothing waiting. Check now to load each channel's latest video when first added.\nAfter that, new uploads appear here until you watch or skip them."
             else:
                 text = "No videos in this list."
             self.empty.setText(text)
