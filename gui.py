@@ -13,6 +13,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
 
 import core
 
+STATUS_LABELS = {"pending": "In inbox", "watched": "Watched", "skipped": "Skipped",
+                 "baseline": "Not in inbox"}
+
 
 class CheckWorker(QThread):
     completed = Signal(object)
@@ -150,17 +153,27 @@ class Window(QMainWindow):
         layout.addWidget(self.warning)
         filters = QHBoxLayout()
         self.view = QComboBox()
-        for label, state in (("Unwatched", "pending"), ("Watched", "watched"), ("Skipped", "skipped")):
+        for label, state in (("Unwatched", "pending"), ("Watched", "watched"), ("Skipped", "skipped"), ("Browse channels", "browse")):
             self.view.addItem(label, state)
         self.view.currentIndexChanged.connect(self.reload)
         filters.addWidget(self.view)
+        self.browse_channel = QComboBox()
+        self.browse_channel.setAccessibleName("Channel to browse")
+        self.browse_channel.setMinimumContentsLength(16)
+        self.browse_channel.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.browse_channel.currentIndexChanged.connect(self.reload)
+        filters.addWidget(self.browse_channel, 1)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Filter by title or channel")
         self.search.textChanged.connect(self.reload)
-        filters.addWidget(self.search)
+        filters.addWidget(self.search, 1)
         layout.addLayout(filters)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Published", "Channel", "Video"])
+        self.browse_note = QLabel("")
+        self.browse_note.setTextFormat(Qt.TextFormat.PlainText)
+        self.browse_note.setWordWrap(True)
+        layout.addWidget(self.browse_note)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Published", "Channel", "Video", "Status"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -173,6 +186,7 @@ class Window(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         self.table.setColumnWidth(1, 205)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.itemSelectionChanged.connect(self.selection_changed)
         self.table.itemDoubleClicked.connect(lambda _: self.play())
         layout.addWidget(self.table, 1)
@@ -223,22 +237,53 @@ class Window(QMainWindow):
             self.signature = signature
             self.reload()
 
+    def sync_browse_channels(self):
+        selected_id = self.browse_channel.currentData()
+        channels = core.channel_rows(self.paths)
+        self.browse_channel.blockSignals(True)
+        self.browse_channel.clear()
+        for channel in channels:
+            self.browse_channel.addItem(channel["name"], channel["id"])
+        index = self.browse_channel.findData(selected_id)
+        if index >= 0:
+            self.browse_channel.setCurrentIndex(index)
+        self.browse_channel.blockSignals(False)
+        return next((c for c in channels if c["id"] == self.browse_channel.currentData()), None)
+
     def reload(self, *_):
         selected_ids = {r["id"] for r in self.selected()} if hasattr(self, "table") else set()
         state = self.view.currentData()
+        browsing = state == "browse"
+        self.browse_channel.setVisible(browsing)
+        self.browse_note.setVisible(browsing)
+        self.table.setColumnHidden(1, browsing)
+        self.table.setColumnHidden(3, not browsing)
+        self.restore_button.setText("Add to inbox" if browsing else "Restore")
+        self.search.setPlaceholderText("Filter these recent videos" if browsing else "Filter by title or channel")
+        if browsing:
+            channel = self.sync_browse_channels()
+            rows = core.recent_channel_rows(self.paths, channel["id"]) if channel else []
+            last_check = channel["last_check"] if channel else None
+            when = dt.datetime.fromtimestamp(last_check).strftime("%d %b %Y, %H:%M") if last_check is not None else "not checked yet"
+            self.browse_note.setText(
+                f"Up to {core.RECENT_UPLOADS} latest saved uploads · Channel last checked: {when}\n"
+                "Play now or add to your inbox for later. Check now refreshes your channels.")
+        else:
+            rows = core.queue_rows(self.paths, state)
         query = self.search.text().casefold().strip()
-        self.rows = [r for r in core.queue_rows(self.paths, state) if not query or query in (r["title"] + " " + r["channel"]).casefold()]
+        self.rows = [r for r in rows if not query or query in (r["title"] + " " + r["channel"]).casefold()]
         self.table.blockSignals(True)
         self.table.clearSelection()
         self.table.setRowCount(len(self.rows))
         for i, row in enumerate(self.rows):
-            values = (dt.datetime.fromtimestamp(row["published"]).strftime("%d %b %H:%M"), row["channel"], row["title"])
+            date_format = "%d %b %Y %H:%M" if browsing else "%d %b %H:%M"
+            values = (dt.datetime.fromtimestamp(row["published"]).strftime(date_format), row["channel"], row["title"], STATUS_LABELS[row["status"]])
             for j, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 self.table.setItem(i, j, item)
             if row["id"] in selected_ids:
-                for col in range(3):
+                for col in range(self.table.columnCount()):
                     self.table.item(i, col).setSelected(True)
         self.table.blockSignals(False)
         db = core.connect(self.paths)
@@ -261,6 +306,8 @@ class Window(QMainWindow):
                 text = "Add your favourite channels, then check for uploads."
             elif state == "pending":
                 text = "Nothing waiting. Check now to load each channel's latest video when first added.\nAfter that, new uploads appear here until you watch or skip them."
+            elif browsing:
+                text = "No published videos saved for this channel yet. Select Check now to fetch recent uploads."
             else:
                 text = "No videos in this list."
             self.empty.setText(text)
@@ -273,9 +320,9 @@ class Window(QMainWindow):
         self.play_button.setText("Play in mpv" if core.settings(self.paths)["player"] == "mpv" else "Play in browser")
         self.play_button.setEnabled(single)
         self.browser_button.setEnabled(single)
-        self.watched_button.setEnabled(bool(selected) and self.view.currentData() != "watched")
-        self.skip_button.setEnabled(bool(selected) and self.view.currentData() != "skipped")
-        self.restore_button.setEnabled(bool(selected) and self.view.currentData() != "pending")
+        self.watched_button.setEnabled(any(r["status"] != "watched" for r in selected))
+        self.skip_button.setEnabled(any(r["status"] != "skipped" for r in selected))
+        self.restore_button.setEnabled(any(r["status"] != "pending" for r in selected))
 
     def change(self, state):
         selected = self.selected()
@@ -350,7 +397,7 @@ class Window(QMainWindow):
 
     def player_failed(self, proc):
         proc.failed = True
-        QMessageBox.warning(self, "Playback failed", "mpv could not start. The video is still unwatched.\n" + proc.errorString())
+        QMessageBox.warning(self, "Playback failed", "mpv could not start. The video's status has not changed.\n" + proc.errorString())
         if proc.state() == QProcess.ProcessState.NotRunning and proc in self.players:
             self.players.remove(proc)
 
@@ -359,7 +406,7 @@ class Window(QMainWindow):
         if code != 0 and not proc.failed:
             message = QMessageBox(self)
             message.setWindowTitle("Playback failed")
-            message.setText("mpv could not play this video. It is still unwatched.\nUse Open in browser to watch it there.")
+            message.setText("mpv could not play this video. Its status has not changed.\nUse Open in browser to watch it there.")
             message.setDetailedText(proc.log or "mpv exited without an error message.")
             message.exec()
         if proc in self.players:

@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -78,6 +79,85 @@ class GuiTests(unittest.TestCase):
         dialog.save()
         self.assertEqual(self.paths.channels.read_text(), "@Example\n")
         dialog.deleteLater()
+
+    def add_browse_channel(self):
+        cid = "UC" + "b" * 22
+        db = core.connect(self.paths)
+        with db:
+            db.execute("INSERT INTO channels(id,name,added_at) VALUES (?,?,?)", (cid, "B channel", 1000))
+        core.ingest(db, cid, "B channel", [
+            {"id": f"{i:011d}", "title": f"Earlier upload {i:02d}", "published": 300 + i}
+            for i in range(20)], 1100)
+        db.close()
+        core.set_status(self.paths, [f"{18:011d}"], "watched")
+        core.set_status(self.paths, [f"{17:011d}"], "skipped")
+        return cid
+
+    def test_browse_play_add_undo_and_filter_without_resetting_history(self):
+        cid = self.add_browse_channel()
+        w = self.window
+        w.view.setCurrentIndex(w.view.findData("browse"))
+        w.browse_channel.setCurrentIndex(w.browse_channel.findData(cid))
+        self.assertTrue(w.browse_channel.isVisible())
+        self.assertEqual(w.table.rowCount(), 15)
+        self.assertEqual([w.table.item(i, 3).text() for i in range(4)],
+                         ["In inbox", "Watched", "Skipped", "Not in inbox"])
+        w.table.selectRow(3)
+        older_id = w.selected()[0]["id"]
+        self.assertEqual(w.restore_button.text(), "Add to inbox")
+        self.assertTrue(w.restore_button.isEnabled())
+        with patch("gui.QDesktopServices.openUrl", return_value=True) as open_url:
+            QTest.mouseClick(w.browser_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(open_url.call_args.args[0].toString(), core.video_url(older_id))
+        self.assertEqual(core.recent_channel_rows(self.paths, cid)[3]["status"], "baseline")
+        QTest.mouseClick(w.restore_button, Qt.MouseButton.LeftButton)
+        self.assertIn(older_id, {r["id"] for r in core.queue_rows(self.paths)})
+        self.assertEqual(w.table.rowCount(), 15)
+        self.assertEqual(w.table.item(3, 3).text(), "In inbox")
+        self.assertFalse(w.restore_button.isEnabled())
+        self.assertEqual(w.table.item(1, 3).text(), "Watched")
+        self.assertEqual(w.table.item(2, 3).text(), "Skipped")
+        w.undo()
+        self.assertEqual(w.table.item(3, 3).text(), "Not in inbox")
+        self.assertNotIn(older_id, {r["id"] for r in core.queue_rows(self.paths)})
+        QTest.mouseClick(w.watched_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(w.table.rowCount(), 15)
+        self.assertEqual(w.table.item(3, 3).text(), "Watched")
+        self.assertFalse(w.watched_button.isEnabled())
+        w.search.setText("upload 16")
+        self.assertEqual(w.table.rowCount(), 1)
+        self.assertEqual(w.rows[0]["id"], older_id)
+        w.search.clear()
+        w.view.setCurrentIndex(w.view.findData("pending"))
+        self.assertFalse(w.browse_channel.isVisible())
+        self.assertTrue(w.table.isColumnHidden(3))
+        self.assertEqual(w.table.rowCount(), 3)
+
+    def test_browse_keeps_channel_on_reload_and_handles_removed_channels(self):
+        cid = self.add_browse_channel()
+        w = self.window
+        w.view.setCurrentIndex(w.view.findData("browse"))
+        w.browse_channel.setCurrentIndex(w.browse_channel.findData(cid))
+        db = core.connect(self.paths)
+        with db:
+            db.execute("UPDATE channels SET name='Renamed channel' WHERE id=?", (cid,))
+        w.reload()
+        self.assertEqual(w.browse_channel.currentData(), cid)
+        self.assertEqual(w.browse_channel.currentText(), "Renamed channel")
+        with db:
+            db.execute("UPDATE channels SET active=0 WHERE id=?", (cid,))
+        w.reload()
+        self.assertEqual(w.browse_channel.count(), 1)
+        self.assertEqual(w.table.rowCount(), 2)
+        with db:
+            db.execute("UPDATE channels SET active=0")
+        db.close()
+        w.reload()
+        self.assertEqual(w.browse_channel.count(), 0)
+        self.assertEqual(w.table.rowCount(), 0)
+        self.assertTrue(w.empty.isVisible())
+        self.assertFalse(w.play_button.isEnabled())
+        self.assertFalse(w.restore_button.isEnabled())
 
 
 if __name__ == "__main__":

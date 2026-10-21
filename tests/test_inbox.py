@@ -160,6 +160,56 @@ class InboxTests(unittest.TestCase):
         self.assertTrue(core.undo(self.paths))
         self.assertTrue(core.queue_rows(self.paths, "watched"))
 
+    def test_channel_browse_is_bounded_and_does_not_change_inbox_or_check_state(self):
+        self.paths.channels.write_text(C1 + "\n" + C2)
+        self.feeds[C1] = feed(C1, [(f"{i:011d}", f"Upload {i}", T0 - 1000 + i) for i in range(20)]
+                             + [("f" * 11, "Future premiere", T0 + 86400)])
+        self.feeds[C2] = feed(C2, [(V1, "Other channel", T0 - 10)])
+        self.check(scheduled=True)
+        core.set_status(self.paths, [f"{18:011d}"], "watched")
+        core.set_status(self.paths, [f"{17:011d}"], "skipped")
+        db = core.connect(self.paths)
+        before = list(db.iterdump())
+        try:
+            self.assertEqual([c["id"] for c in core.channel_rows(self.paths)], [C1, C2])
+            rows = core.recent_channel_rows(self.paths, C1, now=T0)
+            self.assertEqual([r["id"] for r in rows], [f"{i:011d}" for i in range(19, 4, -1)])
+            self.assertEqual({r["status"] for r in rows}, {"baseline", "pending", "watched", "skipped"})
+            self.assertEqual({r["channel_id"] for r in rows}, {C1})
+            self.assertEqual(list(db.iterdump()), before)
+        finally:
+            db.close()
+
+    def test_adding_an_older_browsed_video_survives_checks_and_can_be_undone(self):
+        self.add_new()
+        self.assertEqual(core.recent_channel_rows(self.paths, C1, now=T0 + 60)[1]["status"], "baseline")
+        core.set_status(self.paths, [V1], "pending")
+        self.assertEqual(self.check(T0 + 90)["new"], 0)
+        self.assertEqual({r["id"] for r in core.queue_rows(self.paths)}, {V1, V2})
+        db = core.connect(self.paths)
+        try:
+            # An older upload chosen manually is not a newly discovered upload.
+            self.assertEqual([r["id"] for r in core.notify_candidates(db)], [V2])
+        finally:
+            db.close()
+        self.assertTrue(core.undo(self.paths))
+        self.assertEqual([r["id"] for r in core.queue_rows(self.paths)], [V2])
+        self.assertEqual(core.recent_channel_rows(self.paths, C1, now=T0 + 90)[1]["status"], "baseline")
+
+    def test_browse_hides_removed_channels_and_preserves_readded_history(self):
+        self.check()
+        core.set_status(self.paths, [V1], "watched")
+        self.paths.channels.write_text("")
+        self.check(T0 + 60)
+        self.assertFalse(core.channel_rows(self.paths))
+        self.assertFalse(core.recent_channel_rows(self.paths, C1, now=T0 + 60))
+        self.paths.channels.write_text(C1)
+        self.check(T0 + 120)
+        self.assertEqual([c["id"] for c in core.channel_rows(self.paths)], [C1])
+        rows = core.recent_channel_rows(self.paths, C1, now=T0 + 120)
+        self.assertEqual([(r["id"], r["status"]) for r in rows], [(V1, "watched")])
+        self.assertFalse(core.queue_rows(self.paths))
+
     def test_failed_fetch_preserves_queue_and_retries_same_cycle(self):
         self.paths.channels.write_text(C1 + "\n" + C2 + "\n")
         self.check(scheduled=True)

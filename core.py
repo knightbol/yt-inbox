@@ -22,7 +22,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")
@@ -487,6 +487,29 @@ def queue_rows(paths, status="pending"):
     db = connect(paths)
     try:
         return [dict(r) for r in db.execute("SELECT v.*,c.name AS channel FROM videos v JOIN channels c ON c.id=v.channel_id WHERE c.active=1 AND v.status=? ORDER BY v.published DESC,v.id", (status,))]
+    finally:
+        db.close()
+
+
+def channel_rows(paths):
+    """Subscribed channels available to browse, including ones awaiting a check."""
+    db = connect(paths)
+    try:
+        return [dict(r) for r in db.execute(
+            "SELECT * FROM channels WHERE active=1 ORDER BY name COLLATE NOCASE,id")]
+    finally:
+        db.close()
+
+
+def recent_channel_rows(paths, channel_id, now=None):
+    """Read a finite recent list without changing inbox, history or check state."""
+    now = time.time() if now is None else now
+    db = connect(paths)
+    try:
+        return [dict(r) for r in db.execute(
+            "SELECT v.*,c.name AS channel FROM videos v JOIN channels c ON c.id=v.channel_id "
+            "WHERE c.active=1 AND c.id=? AND v.published<=? "
+            "ORDER BY v.published DESC,v.id LIMIT ?", (channel_id, now, RECENT_UPLOADS))]
     finally:
         db.close()
 

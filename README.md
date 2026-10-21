@@ -42,10 +42,11 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
-Version **1.0.2** includes each channel's latest published video on its first complete
-check, even if that upload predates tracking. Existing channels get this once after
-updating and selecting **Check now**. Watched and skipped videos retain their status.
-The upload-list fallback introduced in 1.0.1 is also included; use a fresh download.
+Version **1.1.0** adds **Browse channels**: choose a followed channel to see up to
+15 recent saved uploads, play one directly, or add it to your inbox for later.
+Watched and skipped labels remain visible while browsing. This includes older
+uploads that were never added to Unwatched. Previous latest-video inclusion and
+upload-list fallback fixes are also included; use a fresh download.
 
 ## First use
 
@@ -71,6 +72,25 @@ Ctrl+Z undoes the latest individual change, and Return plays the selected video.
 Multiple videos can be selected when changing status. Undo restores one video
 at a time. A playing video or running check must finish/close before closing the
 inbox window.
+
+## Browse a channel's recent videos
+
+1. Open the **Unwatched** dropdown and choose **Browse channels**.
+2. Choose one of your followed channels in the channel selector.
+3. Select a video to play it, open its direct link, or choose **Add to inbox**
+   to save it in Unwatched for later. **Undo** reverses the most recent change.
+
+The view shows up to 15 latest published uploads saved by your checks, newest
+first, including older uploads hidden from the inbox. It shows each video's
+status: **In inbox**, **Watched**, **Skipped**, or **Not in inbox**. Watching or
+skipping a video keeps it in this recent list with its label; it stays out of
+Unwatched unless you explicitly add it again.
+
+Browsing and playback do not automatically change any video's status. The filter
+searches this finite list. There is no infinite scroll or full-channel archive.
+The channel's last complete check time appears above the videos. **Check now**
+refreshes all your channels using the usual upload check; saved videos remain
+available to browse when offline. Video playback needs an internet connection.
 
 ## Daily behaviour
 
@@ -178,7 +198,8 @@ require watching in your signed-in browser; this app does not read browser cooki
 ## Verification
 
 The package includes deterministic tests for feed ingestion, deduplication,
-latest-video inclusion, baseline handling, status persistence, retry cycles, channel removal/re-addition,
+latest-video inclusion, finite channel browsing, adding older videos with undo,
+baseline handling, status persistence, retry cycles, channel removal/re-addition,
 notification delivery/action handling and isolated installation. Regression tests
 cover feed outages, fallback ownership validation, partial progress, exact-date
 handling and recovery without resetting watched/skipped history. Run:
