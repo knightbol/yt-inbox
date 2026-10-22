@@ -18,6 +18,9 @@ settings.json
 *.db-*
 *.lock
 *.log
+downloads/
+*.part
+*.ytdl
 .env
 .env.*
 !.env.example

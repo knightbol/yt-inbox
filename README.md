@@ -19,7 +19,7 @@ verification on an Arch Linux desktop. See **Limits** below for known constraint
 Install dependencies with your system package manager:
 
 ```sh
-sudo pacman -S --needed python pyside6 mpv yt-dlp deno libnotify
+sudo pacman -S --needed python pyside6 mpv yt-dlp ffmpeg deno libnotify
 ```
 
 Download the repository's ZIP from GitHub (**Code → Download ZIP**) or use the
@@ -33,7 +33,7 @@ bash install.sh
 Run the installer as your normal user, without sudo. It installs only for your
 account, enables a daily user timer and adds **YouTube Inbox** to your application
 launcher. If `~/.local/bin` is already in PATH, `yt-inbox` works from any directory.
-Reinstalling preserves all channels, settings and watched/skipped history.
+Reinstalling preserves all channels, settings, watched/skipped history and downloads.
 
 ## Updating an existing installation
 
@@ -42,11 +42,10 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
-Version **1.1.0** adds **Browse channels**: choose a followed channel to see up to
-15 recent saved uploads, play one directly, or add it to your inbox for later.
-Watched and skipped labels remain visible while browsing. This includes older
-uploads that were never added to Unwatched. Previous latest-video inclusion and
-upload-list fallback fixes are also included; use a fresh download.
+Version **1.2.0** adds offline downloads and a channel catalogue with no fixed total
+video limit. Install the new dependency if needed: `sudo pacman -S --needed ffmpeg`.
+Choose individual videos to download, or load a channel's older uploads in batches
+of 100. Catalogue import does not add those videos to your daily inbox.
 
 ## First use
 
@@ -64,33 +63,71 @@ upload-list fallback fixes are also included; use a fresh download.
 Opening a video, reaching its end, or closing the player never marks it watched.
 There is no automatic next-video playback or recommendations view. The dedicated
 mpv launch ignores your normal mpv configuration and requests at most 1080p where
-available. No video file is downloaded for offline storage; ordinary playback
-buffers are used. mpv may retain a resume position locally.
+available. Ordinary streaming uses playback buffers; **Download offline** saves
+a persistent video file. mpv may retain a resume position locally.
 
 Ctrl+R checks for uploads, Ctrl+W marks selected videos watched, Ctrl+K skips them,
 Ctrl+Z undoes the latest individual change, and Return plays the selected video.
 Multiple videos can be selected when changing status. Undo restores one video
-at a time. A playing video or running check must finish/close before closing the
-inbox window.
+at a time. Close a playing video and wait for checks/catalogue pages to finish
+before closing the window. Finish or cancel active downloads in **Downloads**.
 
-## Browse a channel's recent videos
+## Browse a channel's videos
 
 1. Open the **Unwatched** dropdown and choose **Browse channels**.
 2. Choose one of your followed channels in the channel selector.
-3. Select a video to play it, open its direct link, or choose **Add to inbox**
+3. Select **Load older videos** to retrieve the first 100 entries in the channel's
+   upload list. Select it again to load each next batch. **Previous / Next** moves
+   between pages of 50 already loaded videos.
+4. Select a video to play it, download it, open its direct link, or choose **Add to inbox**
    to save it in Unwatched for later. **Undo** reverses the most recent change.
 
-The view shows up to 15 latest published uploads saved by your checks, newest
-first, including older uploads hidden from the inbox. It shows each video's
-status: **In inbox**, **Watched**, **Skipped**, or **Not in inbox**. Watching or
-skipping a video keeps it in this recent list with its label; it stays out of
-Unwatched unless you explicitly add it again.
+Before loading the catalogue, the view shows uploads saved by your usual checks.
+The catalogue follows YouTube's upload-list order, including older uploads hidden
+from the inbox. It shows each video's status: **In inbox**, **Watched**, **Skipped**,
+or **Not in inbox**. Watching or skipping changes its label and keeps it out of
+Unwatched unless you explicitly add it again. Exact publication dates are shown
+when known from normal checks; other catalogue entries show a dash.
 
 Browsing and playback do not automatically change any video's status. The filter
-searches this finite list. There is no infinite scroll or full-channel archive.
-The channel's last complete check time appears above the videos. **Check now**
-refreshes all your channels using the usual upload check; saved videos remain
-available to browse when offline. Video playback needs an internet connection.
+searches all loaded entries, including other pages. There is no fixed total
+catalogue limit and no automatic infinite scroll. A final empty batch marks the
+end of the available list. Saved catalogue entries remain available offline.
+
+**Refresh catalogue** restarts from the newest uploads while retaining cached
+entries, watched history and downloads. Use it when the upload list changes or
+to retry a scan from the beginning. **Check now** continues to refresh the normal
+daily inbox; it does not crawl the full catalogue. Failed catalogue pages can be
+retried without losing earlier pages. Each page has a two-minute lookup timeout.
+
+## Download videos for later
+
+1. Select one or more videos and choose **Download offline**.
+2. Select **Downloads** in the view dropdown to see the queue and saved files.
+3. Wait for **Ready**, then select **Play offline**. This opens the local file in
+   mpv even when your preferred streaming player is the browser.
+
+Downloads run one at a time while the app is open. The progress line shows the
+active download; merging audio and video can take a little longer after 100%.
+The default maximum quality is **720p**. Settings also offers **480p** and **1080p**;
+changes apply to subsequent downloads. Actual quality depends on available formats.
+
+**Cancel download** stops selected queued/active downloads and keeps partial files.
+Select **Download offline** again to retry; yt-dlp attempts to resume supported
+partial downloads. If the app exits unexpectedly, interrupted queue entries are
+retried when it next opens. Failed entries stay failed until you retry them; hover
+over **Failed** to read the error. A failed video does not block the rest of the queue.
+
+Files are stored under `~/.local/share/yt-inbox/downloads/VIDEO_ID/` by default.
+**Open downloads folder** opens that location. **Remove files** deletes the selected
+local copies and partial files, keeping the videos' watched/inbox status. Cancel
+downloads and close playback before removing their files. Files are not deleted
+automatically when you mark a video watched, so remove them when you need disk space.
+
+A video is marked **Ready** only after a successful download/merge and verification
+that the output file exists. Missing files can be downloaded again. Downloading,
+playing and removing files never automatically mark a video watched. **Open in
+browser** always uses the online YouTube link.
 
 ## Daily behaviour
 
@@ -141,6 +178,7 @@ link for the new channel rather than reusing the cached handle.
 
 - Settings: `~/.config/yt-inbox/settings.json`
 - Queue/history: `~/.local/share/yt-inbox/inbox.sqlite3`
+- Offline video files: `~/.local/share/yt-inbox/downloads/`
 - Installed code: `~/.local/share/yt-inbox/app/`
 - Launcher: `~/.local/bin/yt-inbox`
 - Timer/services: `~/.config/systemd/user/yt-inbox-*`
@@ -178,12 +216,16 @@ python3 ~/.local/share/yt-inbox/app/install.py --uninstall
 
 ## Limits
 
-YouTube's public feeds expose a limited recent upload window, not a complete
-archive. The fallback also reads at most 15 uploads. A long offline period or a
-very busy channel can therefore leave gaps.
-This version does not backfill an entire channel or guarantee every upload.
+Daily checks use YouTube's limited recent feed window; the daily fallback also
+reads at most 15 uploads. A long offline period or a very busy channel can leave
+gaps in the automatic inbox. The on-demand catalogue can retrieve older uploads
+without that limit, but only entries YouTube makes available in its upload list.
+Large channels take multiple batches. Uploads added or removed during a scan can
+shift page positions; refresh and scan again if the list changed. Cached entries
+are retained when an upload disappears from YouTube.
 Shorts/live announcements can appear; video-type filtering is not implemented.
-Deleted, private or unavailable uploads may fail to play. Watching somewhere else
+Live broadcasts are not recorded by the downloader. Deleted, private, restricted
+or otherwise unavailable uploads may fail to play or download. Watching somewhere else
 does not update this local inbox; no YouTube account history is read.
 
 Feeds and channel resolution can temporarily fail or change upstream. Failures
@@ -198,11 +240,13 @@ require watching in your signed-in browser; this app does not read browser cooki
 ## Verification
 
 The package includes deterministic tests for feed ingestion, deduplication,
-latest-video inclusion, finite channel browsing, adding older videos with undo,
+latest-video inclusion, catalogue pagination, adding older videos with undo,
 baseline handling, status persistence, retry cycles, channel removal/re-addition,
 notification delivery/action handling and isolated installation. Regression tests
 cover feed outages, fallback ownership validation, partial progress, exact-date
-handling and recovery without resetting watched/skipped history. Run:
+handling and recovery without resetting watched/skipped history. Download tests
+cover sequential transfers, failures, cancellation, partial-file retention, queue
+recovery, output validation, file removal and offline playback selection. Run:
 
 ```sh
 python3 -m unittest discover -s tests -v
@@ -213,5 +257,6 @@ notification rendering and mpv streaming still depend on your local session and
 network; they cannot be established by fixture tests alone.
 
 Built with Python's standard library plus PySide6. Uses YouTube Atom feeds,
-yt-dlp for channel resolution and upload-list fallback, mpv for streaming, and libnotify/systemd
+yt-dlp for channel resolution, catalogue lookup and downloads, ffmpeg for audio/video
+merging, mpv for streaming and offline playback, and libnotify/systemd
 for desktop notifications and scheduling. No API key or subscription required.

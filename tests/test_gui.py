@@ -8,6 +8,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import core
+import media
 
 try:
     from PySide6.QtWidgets import QApplication
@@ -99,7 +100,7 @@ class GuiTests(unittest.TestCase):
         w.view.setCurrentIndex(w.view.findData("browse"))
         w.browse_channel.setCurrentIndex(w.browse_channel.findData(cid))
         self.assertTrue(w.browse_channel.isVisible())
-        self.assertEqual(w.table.rowCount(), 15)
+        self.assertEqual(w.table.rowCount(), 20)
         self.assertEqual([w.table.item(i, 3).text() for i in range(4)],
                          ["In inbox", "Watched", "Skipped", "Not in inbox"])
         w.table.selectRow(3)
@@ -112,7 +113,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(core.recent_channel_rows(self.paths, cid)[3]["status"], "baseline")
         QTest.mouseClick(w.restore_button, Qt.MouseButton.LeftButton)
         self.assertIn(older_id, {r["id"] for r in core.queue_rows(self.paths)})
-        self.assertEqual(w.table.rowCount(), 15)
+        self.assertEqual(w.table.rowCount(), 20)
         self.assertEqual(w.table.item(3, 3).text(), "In inbox")
         self.assertFalse(w.restore_button.isEnabled())
         self.assertEqual(w.table.item(1, 3).text(), "Watched")
@@ -121,7 +122,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(w.table.item(3, 3).text(), "Not in inbox")
         self.assertNotIn(older_id, {r["id"] for r in core.queue_rows(self.paths)})
         QTest.mouseClick(w.watched_button, Qt.MouseButton.LeftButton)
-        self.assertEqual(w.table.rowCount(), 15)
+        self.assertEqual(w.table.rowCount(), 20)
         self.assertEqual(w.table.item(3, 3).text(), "Watched")
         self.assertFalse(w.watched_button.isEnabled())
         w.search.setText("upload 16")
@@ -158,6 +159,58 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(w.empty.isVisible())
         self.assertFalse(w.play_button.isEnabled())
         self.assertFalse(w.restore_button.isEnabled())
+
+    def test_catalogue_paging_and_search_across_loaded_pages(self):
+        cid = self.add_browse_channel()
+        db = core.connect(self.paths)
+        with db:
+            db.executemany("INSERT INTO catalogue VALUES (?,?,?,?,?)", [
+                (f"{i:011d}", cid, f"Archive title {i}", i + 1, 1) for i in range(120)])
+            db.execute("INSERT INTO catalogue_state VALUES (?,?,?,?,?)", (cid, 201, 0, 1, 1000))
+        db.close()
+        w = self.window
+        w.view.setCurrentIndex(w.view.findData("browse"))
+        w.browse_channel.setCurrentIndex(w.browse_channel.findData(cid))
+        self.assertEqual(w.table.rowCount(), 50)
+        QTest.mouseClick(w.next_page, Qt.MouseButton.LeftButton)
+        self.assertEqual(w.rows[0]["id"], f"{50:011d}")
+        QTest.mouseClick(w.next_page, Qt.MouseButton.LeftButton)
+        self.assertEqual(w.table.rowCount(), 20)
+        self.assertFalse(w.next_page.isEnabled())
+        w.search.setText("Archive title 119")
+        self.assertEqual(w.table.rowCount(), 1)
+        self.assertEqual(w.rows[0]["id"], f"{119:011d}")
+        self.assertEqual(w.table.item(0, 0).text(), "—")
+        w.table.selectRow(0)
+        QTest.mouseClick(w.restore_button, Qt.MouseButton.LeftButton)
+        self.assertIn(f"{119:011d}", {r["id"] for r in core.queue_rows(self.paths)})
+
+    def test_offline_playback_uses_local_file_even_with_browser_preference(self):
+        video_id = "x" * 11
+        media.queue_downloads(self.paths, [video_id])
+        folder = media.download_directory(self.paths, video_id)
+        folder.mkdir(parents=True)
+        file = folder / "media.mkv"
+        file.write_bytes(b"test media")
+        media.finish_download(self.paths, video_id, file)
+        core.save_settings(self.paths, {"daily_time": "19:00", "player": "browser"})
+        w = self.window
+        w.view.setCurrentIndex(w.view.findData("downloads"))
+        w.table.selectRow(0)
+        self.assertEqual(w.play_button.text(), "Play offline")
+        with patch("gui.shutil.which", side_effect=lambda name: "/usr/bin/mpv" if name == "mpv" else None), \
+             patch.object(gui.QProcess, "start"), patch("gui.QDesktopServices.openUrl") as browser:
+            w.play()
+        browser.assert_not_called()
+        self.assertEqual(w.players[0].arguments()[-1], str(file))
+        self.assertIn("--ytdl=no", w.players[0].arguments())
+        self.assertEqual(len(core.queue_rows(self.paths)), 2)
+        file.unlink()
+        with patch.object(gui.QProcess, "start") as start, patch("gui.QMessageBox.warning") as warning:
+            w.play()
+        start.assert_not_called()
+        warning.assert_called_once()
+        self.assertFalse(w.play_button.isEnabled())
 
 
 if __name__ == "__main__":

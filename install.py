@@ -64,7 +64,7 @@ def install(paths, enable=True):
     source = Path(__file__).resolve().parent
     app = paths.data / "app"
     app.mkdir(parents=True, exist_ok=True)
-    for name in ("core.py", "cli.py", "gui.py", "install.py", "README.md"):
+    for name in ("core.py", "media.py", "transfers.py", "cli.py", "gui.py", "install.py", "README.md"):
         target = app / name
         if source / name != target:
             # Replace code atomically. Existing preferences and database are preserved.
@@ -164,11 +164,11 @@ def main():
             import PySide6.QtWidgets
         except ImportError:
             missing.append("pyside6")
-        for command, package in (("mpv", "mpv"), ("yt-dlp", "yt-dlp"), ("deno", "deno"), ("notify-send", "libnotify")):
+        for command, package in (("mpv", "mpv"), ("yt-dlp", "yt-dlp"), ("ffmpeg", "ffmpeg"), ("deno", "deno"), ("notify-send", "libnotify")):
             if not shutil.which(command):
                 missing.append(package)
         if missing:
-            print("Install the required Arch packages first:\n\nsudo pacman -S --needed python pyside6 mpv yt-dlp deno libnotify", file=sys.stderr)
+            print("Install the required Arch packages first:\n\nsudo pacman -S --needed python pyside6 mpv yt-dlp ffmpeg deno libnotify", file=sys.stderr)
             return 1
     try:
         launcher = install(paths, not args.no_enable)

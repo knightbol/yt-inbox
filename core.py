@@ -22,7 +22,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")
@@ -97,6 +97,8 @@ def settings(paths):
             raise ValueError("daily_time must be HH:MM")
         if data.get("player") not in ("mpv", "browser"):
             raise ValueError("player must be mpv or browser")
+        if data.get("download_height", 720) not in (480, 720, 1080):
+            raise ValueError("download_height must be 480, 720 or 1080")
         return data
     except (OSError, ValueError, TypeError) as exc:
         raise InboxError(f"Invalid settings: {exc}") from exc
@@ -143,6 +145,16 @@ def connect(paths):
         id INTEGER PRIMARY KEY, video_id TEXT NOT NULL REFERENCES videos(id),
         old_status TEXT NOT NULL, new_status TEXT NOT NULL, happened REAL NOT NULL,
         undone INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS catalogue(
+        id TEXT PRIMARY KEY, channel_id TEXT NOT NULL REFERENCES channels(id),
+        title TEXT NOT NULL, position INTEGER NOT NULL, generation INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS catalogue_channel ON catalogue(channel_id,generation,position);
+      CREATE TABLE IF NOT EXISTS catalogue_state(
+        channel_id TEXT PRIMARY KEY REFERENCES channels(id), next_start INTEGER NOT NULL,
+        exhausted INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL, updated REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS downloads(
+        id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('queued','downloading','complete','failed','cancelled')),
+        path TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', updated REAL NOT NULL);
     """)
     return db
 
@@ -286,7 +298,7 @@ def parse_feed(raw, channel_id):
 def ytdlp_json(url, options, timeout=60):
     """Read public metadata only, ignoring user config and never loading cookies."""
     if not shutil.which("yt-dlp"):
-        raise InboxError("Install yt-dlp to use the upload-list fallback.")
+        raise InboxError("Install yt-dlp to retrieve YouTube video lists.")
     try:
         result = subprocess.run([
             "yt-dlp", "--ignore-config", "--dump-single-json", "--skip-download",
@@ -338,7 +350,7 @@ def fallback_uploads(channel_id, known, channel_name):
             if video_id in seen:
                 continue
             seen.add(video_id)
-            if video_id in known:
+            if video_id in known and known[video_id]["published"] > 0:
                 published = known[video_id]["published"]
             else:
                 remaining = deadline - time.monotonic()
@@ -383,8 +395,14 @@ def ingest(db, channel_id, name, entries, now, cycle=None, complete=True):
     with db:
         for item in entries:
             status = "pending" if item["published"] >= channel["added_at"] else "baseline"
-            existing = db.execute("SELECT status FROM videos WHERE id=?", (item["id"],)).fetchone()
+            existing = db.execute("SELECT status,published FROM videos WHERE id=?", (item["id"],)).fetchone()
             if existing:
+                # An undone archive-only choice may have no exact date yet.
+                # Once known, let normal tracking classify it; preserve explicit choices.
+                if existing["published"] == 0 and existing["status"] == "baseline":
+                    db.execute("UPDATE videos SET status=?,notified=? WHERE id=?",
+                               (status, int(status == "baseline"), item["id"]))
+                    new_count += int(status == "pending")
                 # Never overwrite user status when an upload title changes.
                 db.execute("UPDATE videos SET title=?,published=? WHERE id=?", (item["title"], item["published"], item["id"]))
             else:
@@ -522,6 +540,14 @@ def set_status(paths, ids, status):
         with db:
             for video_id in ids:
                 old = db.execute("SELECT status FROM videos WHERE id=?", (video_id,)).fetchone()
+                if not old:
+                    archived = db.execute("SELECT * FROM catalogue WHERE id=?", (video_id,)).fetchone()
+                    if archived:
+                        stamp = time.time()
+                        db.execute("INSERT INTO videos VALUES (?,?,?,?,?,?,?,?)",
+                                   (video_id, archived["channel_id"], archived["title"], 0,
+                                    stamp, "baseline", 1, stamp))
+                        old = ("baseline",)
                 if old and old[0] != status:
                     stamp = time.time()
                     db.execute("INSERT INTO actions(video_id,old_status,new_status,happened) VALUES (?,?,?,?)", (video_id, old[0], status, stamp))
