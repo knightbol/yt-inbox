@@ -22,7 +22,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")
@@ -70,7 +70,7 @@ class Paths:
         if not self.channels.exists():
             atomic_write(self.channels, DEFAULT_CHANNELS)
         if not (self.config / "settings.json").exists():
-            save_settings(self, {"daily_time": "19:00", "player": "mpv"})
+            save_settings(self, {"daily_time": "19:00", "player": "mpv", "hide_shorts": True})
 
 
 def atomic_write(path: Path, content: str, mode=0o600):
@@ -99,6 +99,8 @@ def settings(paths):
             raise ValueError("player must be mpv or browser")
         if data.get("download_height", 720) not in (480, 720, 1080):
             raise ValueError("download_height must be 480, 720 or 1080")
+        if type(data.get("hide_shorts", True)) is not bool:
+            raise ValueError("hide_shorts must be true or false")
         return data
     except (OSError, ValueError, TypeError) as exc:
         raise InboxError(f"Invalid settings: {exc}") from exc
@@ -155,8 +157,47 @@ def connect(paths):
       CREATE TABLE IF NOT EXISTS downloads(
         id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('queued','downloading','complete','failed','cancelled')),
         path TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', updated REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS video_types(
+        id TEXT PRIMARY KEY, is_short INTEGER CHECK(is_short IN (0,1)),
+        checked REAL NOT NULL, retry_after REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
     """)
     return db
+
+
+def hide_shorts(paths):
+    return settings(paths).get("hide_shorts", True)
+
+
+def visibility_clause(hide, alias="v"):
+    # Unknown types stay hidden until confirmed; watch URLs and duration alone
+    # do not establish that a video is not a Short. Aliases are internal constants.
+    return f"EXISTS (SELECT 1 FROM video_types t WHERE t.id={alias}.id AND t.is_short=0)" if hide else "1"
+
+
+def record_video_type(db, video_id, is_short):
+    if type(is_short) is bool:
+        db.execute("INSERT INTO video_types(id,is_short,checked) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                   "is_short=excluded.is_short,checked=excluded.checked,retry_after=0,error=''",
+                   (video_id, int(is_short), time.time()))
+
+
+def short_from_metadata(data):
+    kind = data.get("media_type")
+    if kind in ("short", "video", "livestream"):
+        return kind == "short"
+    # A Shorts navigation URL is positive evidence; a normal watch URL is not.
+    for key in ("url", "webpage_url"):
+        value = data.get(key)
+        if isinstance(value, str):
+            parsed = urllib.parse.urlparse(value)
+            if parsed.hostname in ("youtube.com", "www.youtube.com", "m.youtube.com") and parsed.path.startswith("/shorts/"):
+                return True
+    return None
+
+
+def pending_count(db, hide=False):
+    return db.execute("SELECT count(*) FROM videos v JOIN channels c ON c.id=v.channel_id "
+                      "WHERE c.active=1 AND v.status='pending' AND " + visibility_clause(hide)).fetchone()[0]
 
 
 def meta_get(db, key, default=""):
@@ -350,6 +391,7 @@ def fallback_uploads(channel_id, known, channel_name):
             if video_id in seen:
                 continue
             seen.add(video_id)
+            is_short = short_from_metadata(item)
             if video_id in known and known[video_id]["published"] > 0:
                 published = known[video_id]["published"]
             else:
@@ -363,10 +405,12 @@ def fallback_uploads(channel_id, known, channel_name):
                 ], timeout=min(60, remaining))
                 if details.get("id") != video_id or details.get("channel_id") != channel_id:
                     raise InboxError("Video metadata belongs to a different video or channel.")
+                is_short = short_from_metadata(details)
                 published = details.get("release_timestamp") or details.get("timestamp")
                 if type(published) not in (int, float) or not math.isfinite(published) or published <= 0:
                     raise InboxError(f"Publication time unavailable for {video_id}; it will be retried.")
-            entries.append({"id": video_id, "title": item.get("title") or "Untitled video", "published": published})
+            entries.append({"id": video_id, "title": item.get("title") or "Untitled video", "published": published,
+                            "is_short": is_short})
         except (InboxError, OSError) as exc:
             errors.append(str(exc))
     return name, entries, errors
@@ -389,11 +433,15 @@ def read_uploads(channel_id, known, channel_name, fetcher=fetch):
         raise InboxError(feed_error + "; upload-list fallback: " + str(exc)) from exc
 
 
-def ingest(db, channel_id, name, entries, now, cycle=None, complete=True):
+def ingest(db, channel_id, name, entries, now, cycle=None, complete=True, filter_shorts=False):
     channel = db.execute("SELECT * FROM channels WHERE id=?", (channel_id,)).fetchone()
     new_count = 0
     with db:
         for item in entries:
+            record_video_type(db, item["id"], item.get("is_short"))
+        visible = {r[0] for r in db.execute("SELECT id FROM video_types WHERE is_short=0")} if filter_shorts else None
+        for item in entries:
+            show = visible is None or item["id"] in visible
             status = "pending" if item["published"] >= channel["added_at"] else "baseline"
             existing = db.execute("SELECT status,published FROM videos WHERE id=?", (item["id"],)).fetchone()
             if existing:
@@ -402,19 +450,19 @@ def ingest(db, channel_id, name, entries, now, cycle=None, complete=True):
                 if existing["published"] == 0 and existing["status"] == "baseline":
                     db.execute("UPDATE videos SET status=?,notified=? WHERE id=?",
                                (status, int(status == "baseline"), item["id"]))
-                    new_count += int(status == "pending")
+                    new_count += int(status == "pending" and show)
                 # Never overwrite user status when an upload title changes.
                 db.execute("UPDATE videos SET title=?,published=? WHERE id=?", (item["title"], item["published"], item["id"]))
             else:
                 db.execute("INSERT INTO videos VALUES (?,?,?,?,?,?,?,?)", (item["id"], channel_id, item["title"], item["published"], now, status, int(status == "baseline"), now))
-                new_count += int(status == "pending")
+                new_count += int(status == "pending" and show)
         if complete:
             # Include one starting video for new channels and upgrades from older
             # versions. Wait for a complete snapshot so partial fallback metadata
             # cannot select an older video while the newest is still unresolved.
-            seed_key = "latest_video_shown:" + channel_id
+            seed_key = ("latest_non_short_shown:" if filter_shorts else "latest_video_shown:") + channel_id
             if not meta_get(db, seed_key):
-                latest = max((item for item in entries if item["published"] <= now),
+                latest = max((item for item in entries if item["published"] <= now and (visible is None or item["id"] in visible)),
                              key=lambda item: (item["published"], item["id"]), default=None)
                 if latest:
                     new_count += db.execute(
@@ -423,6 +471,7 @@ def ingest(db, channel_id, name, entries, now, cycle=None, complete=True):
                         (now, latest["id"], channel_id)).rowcount
                     # Explicit watched/skipped states count as handled as well.
                     meta_set(db, seed_key, "1")
+                    meta_set(db, "latest_video_shown:" + channel_id, "1")
             db.execute("UPDATE channels SET name=?,last_check=?,error='',last_cycle=COALESCE(?,last_cycle) WHERE id=?", (name, now, cycle, channel_id))
         else:
             db.execute("UPDATE channels SET name=? WHERE id=?", (name, channel_id))
@@ -440,9 +489,12 @@ def cycle_key(daily_time, now=None):
 
 
 def run_check(paths, scheduled=False, now=None, fetcher=fetch, resolver=resolve_channel):
+    import video_types
     paths.ensure()
     now = time.time() if now is None else now
-    cycle = cycle_key(settings(paths)["daily_time"], now) if scheduled else None
+    preferences = settings(paths)
+    filter_shorts = preferences.get("hide_shorts", True)
+    cycle = cycle_key(preferences["daily_time"], now) if scheduled else None
     with exclusive_lock(paths.state / "check.lock"):
         urls, errors = parse_channels(paths.channels.read_text(encoding="utf-8"))
         db = connect(paths)
@@ -482,7 +534,9 @@ def run_check(paths, scheduled=False, now=None, fetcher=fetch, resolver=resolve_
                 try:
                     known = {r["id"]: r for r in db.execute("SELECT id,published FROM videos WHERE channel_id=?", (cid,))}
                     name, entries, upload_errors = read_uploads(cid, known, row["name"], fetcher)
-                    added += ingest(db, cid, name, entries, now, cycle, complete=not upload_errors)
+                    if filter_shorts:
+                        upload_errors += video_types.classify_entries(paths, cid, entries, force=not scheduled)
+                    added += ingest(db, cid, name, entries, now, cycle, complete=not upload_errors, filter_shorts=filter_shorts)
                     if upload_errors:
                         raise InboxError("; ".join(upload_errors)[:800])
                     checked += 1
@@ -504,7 +558,9 @@ def run_check(paths, scheduled=False, now=None, fetcher=fetch, resolver=resolve_
 def queue_rows(paths, status="pending"):
     db = connect(paths)
     try:
-        return [dict(r) for r in db.execute("SELECT v.*,c.name AS channel FROM videos v JOIN channels c ON c.id=v.channel_id WHERE c.active=1 AND v.status=? ORDER BY v.published DESC,v.id", (status,))]
+        return [dict(r) for r in db.execute("SELECT v.*,c.name AS channel FROM videos v JOIN channels c ON c.id=v.channel_id "
+                                          "WHERE c.active=1 AND v.status=? AND " + visibility_clause(hide_shorts(paths)) +
+                                          " ORDER BY v.published DESC,v.id", (status,))]
     finally:
         db.close()
 
@@ -526,7 +582,7 @@ def recent_channel_rows(paths, channel_id, now=None):
     try:
         return [dict(r) for r in db.execute(
             "SELECT v.*,c.name AS channel FROM videos v JOIN channels c ON c.id=v.channel_id "
-            "WHERE c.active=1 AND c.id=? AND v.published<=? "
+            "WHERE c.active=1 AND c.id=? AND v.published<=? AND " + visibility_clause(hide_shorts(paths)) + " "
             "ORDER BY v.published DESC,v.id LIMIT ?", (channel_id, now, RECENT_UPLOADS))]
     finally:
         db.close()
@@ -576,8 +632,10 @@ def video_url(video_id):
     return "https://www.youtube.com/watch?v=" + video_id
 
 
-def notify_candidates(db):
-    return [dict(r) for r in db.execute("SELECT v.id,v.title,c.name AS channel FROM videos v JOIN channels c ON c.id=v.channel_id WHERE c.active=1 AND v.status='pending' AND v.notified=0 ORDER BY v.published DESC")]
+def notify_candidates(db, hide=False):
+    return [dict(r) for r in db.execute("SELECT v.id,v.title,c.name AS channel FROM videos v JOIN channels c ON c.id=v.channel_id "
+                                      "WHERE c.active=1 AND v.status='pending' AND v.notified=0 AND " + visibility_clause(hide) +
+                                      " ORDER BY v.published DESC")]
 
 
 def socket_name(paths):

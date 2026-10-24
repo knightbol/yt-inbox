@@ -34,6 +34,7 @@ class InboxTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.paths = core.Paths(self.root / "config", self.root / "data", self.root / "state")
         self.paths.ensure()
+        core.save_settings(self.paths, {"daily_time": "19:00", "player": "mpv", "hide_shorts": False})
         self.paths.channels.write_text(C1 + "\n")
         self.feeds = {C1: feed(C1, [(V1, "Old upload", T0 - 86400)]), C2: feed(C2, [])}
         self.calls = []
@@ -92,6 +93,7 @@ class InboxTests(unittest.TestCase):
 
     def legacy_channel(self, latest_status="baseline"):
         """Populate the persisted state written by 1.0.0/1.0.1."""
+        core.save_settings(self.paths, {"daily_time": "19:00", "player": "mpv", "hide_shorts": False})
         db = core.connect(self.paths)
         with db:
             db.execute("INSERT INTO channels(id,name,added_at,last_check) VALUES (?,?,?,?)", (C1, "Existing channel", T0, T0))

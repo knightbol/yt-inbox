@@ -6,13 +6,14 @@ import sys
 from PySide6.QtCore import Qt, QProcess, QThread, QTime, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox,
     QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QTimeEdit, QVBoxLayout, QWidget)
 
 import core
 import media
+import video_types
 from transfers import DownloadQueue
 
 STATUS_LABELS = {"pending": "In inbox", "watched": "Watched", "skipped": "Skipped",
@@ -45,6 +46,20 @@ class CatalogueWorker(QThread):
             self.completed.emit(media.load_catalogue(self.paths, self.channel_id, self.restart))
         except Exception as exc:
             self.completed.emit({"error": str(exc)})
+
+
+class TypeWorker(QThread):
+    def __init__(self, paths, parent=None):
+        super().__init__(parent)
+        self.paths = paths
+
+    def run(self):
+        try:
+            video_types.classify_saved(self.paths, self.isInterruptionRequested)
+        except Exception:
+            # Unclassified videos remain hidden, with a visible pending count.
+            # The next batch or Check now can retry without changing history.
+            pass
 
 
 class ChannelsDialog(QDialog):
@@ -104,6 +119,12 @@ class SettingsDialog(QDialog):
             self.quality.addItem(f"Up to {height}p", height)
         self.quality.setCurrentIndex(self.quality.findData(current.get("download_height", 720)))
         layout.addRow("Offline download quality", self.quality)
+        self.hide_shorts = QCheckBox("Hide Shorts")
+        self.hide_shorts.setChecked(current.get("hide_shorts", True))
+        layout.addRow("Video filtering", self.hide_shorts)
+        filter_note = QLabel("Applies to all video lists and notifications. Videos awaiting a type check stay hidden.")
+        filter_note.setWordWrap(True)
+        layout.addRow(filter_note)
         note = QLabel("Watched status is always manual. Opening or closing a video does not remove it.")
         note.setWordWrap(True)
         layout.addRow(note)
@@ -114,7 +135,7 @@ class SettingsDialog(QDialog):
 
     def save(self):
         values = {"daily_time": self.daily.time().toString("HH:mm"), "player": self.player.currentData(),
-                  "download_height": self.quality.currentData()}
+                  "download_height": self.quality.currentData(), "hide_shorts": self.hide_shorts.isChecked()}
         try:
             old = core.settings(self.paths)
             core.save_settings(self.paths, values)
@@ -134,6 +155,9 @@ class Window(QMainWindow):
         self.paths = paths
         self.worker = None
         self.catalogue_worker = None
+        self.type_worker = None
+        self.close_after_types = False
+        self.check_after_types = False
         self.browse_page = 0
         self.browse_key = None
         self.download_records = {}
@@ -177,6 +201,10 @@ class Window(QMainWindow):
         self.warning.setWordWrap(True)
         self.warning.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.warning)
+        self.type_notice = QLabel("")
+        self.type_notice.setWordWrap(True)
+        self.type_notice.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.type_notice)
         filters = QHBoxLayout()
         self.view = QComboBox()
         for label, state in (("Unwatched", "pending"), ("Watched", "watched"), ("Skipped", "skipped"), ("Browse channels", "browse"), ("Downloads", "downloads")):
@@ -294,7 +322,12 @@ class Window(QMainWindow):
         self.download_queue = DownloadQueue(paths, self)
         self.download_queue.changed.connect(self.reload)
         self.download_queue.progress.connect(self.download_progress)
+        self.type_timer = QTimer(self)
+        self.type_timer.setInterval(5000)
+        self.type_timer.timeout.connect(self.check_video_types)
+        self.type_timer.start()
         self.reload()
+        QTimer.singleShot(0, self.check_video_types)
 
     def selected(self):
         return [self.rows[index.row()] for index in self.table.selectionModel().selectedRows() if index.row() < len(self.rows)]
@@ -381,7 +414,7 @@ class Window(QMainWindow):
         self.table.blockSignals(False)
         db = core.connect(self.paths)
         try:
-            count = db.execute("SELECT count(*) FROM videos v JOIN channels c ON c.id=v.channel_id WHERE c.active=1 AND v.status='pending'").fetchone()[0]
+            count = core.pending_count(db, core.hide_shorts(self.paths))
             channels = db.execute("SELECT count(*) FROM channels WHERE active=1").fetchone()[0]
             last = core.meta_get(db, "last_success")
             errors = core.meta_get(db, "last_errors")
@@ -391,6 +424,10 @@ class Window(QMainWindow):
         self.summary.setText(f"{count} unwatched · {channels} channel{'s' if channels != 1 else ''} · Last complete check: {when}")
         self.warning.setText("Some channels could not be checked. Try Check now; scheduled checks retry automatically.\n" + errors[:800] if errors else "")
         self.warning.setVisible(bool(errors))
+        remaining = video_types.pending_count(self.paths) if core.hide_shorts(self.paths) else 0
+        self.type_notice.setText(f"Hide Shorts is on · {remaining} videos awaiting type checks.\n"
+                                 "Checks run in the background and failures retry automatically. Settings lets you show all videos.")
+        self.type_notice.setVisible(bool(remaining))
         self.empty.setVisible(not self.rows)
         if not self.rows:
             if query:
@@ -493,10 +530,41 @@ class Window(QMainWindow):
 
     def edit_settings(self):
         SettingsDialog(self.paths, self).exec()
-        self.selection_changed()
+        if not core.hide_shorts(self.paths) and self.type_worker and self.type_worker.isRunning():
+            self.type_worker.requestInterruption()
+        self.reload()
+        self.check_video_types()
+        self.download_queue.start_next()
+
+    def check_video_types(self):
+        if self.close_after_types or self.check_after_types or not core.hide_shorts(self.paths):
+            return
+        if (self.type_worker and self.type_worker.isRunning()) or (self.worker and self.worker.isRunning()):
+            return
+        if not video_types.pending_count(self.paths, ready_only=True):
+            return
+        self.type_worker = TypeWorker(self.paths, self)
+        self.type_worker.finished.connect(self.video_types_checked)
+        self.type_worker.start()
+
+    def video_types_checked(self):
+        self.reload()
+        if self.close_after_types:
+            self.close()
+        elif self.check_after_types:
+            self.check_after_types = False
+            self.check()
+        else:
+            self.download_queue.start_next()
+            QTimer.singleShot(1000, self.check_video_types)
 
     def check(self):
         if self.worker and self.worker.isRunning():
+            return
+        if self.type_worker and self.type_worker.isRunning():
+            self.check_after_types = True
+            self.type_worker.requestInterruption()
+            self.statusBar().showMessage("Finishing the current video-type requests, then checking your channels…")
             return
         self.refresh_button.setEnabled(False)
         self.channels_button.setEnabled(False)
@@ -593,6 +661,12 @@ class Window(QMainWindow):
             return
         if any(p.state() != QProcess.ProcessState.NotRunning for p in self.players):
             self.statusBar().showMessage("Close the playing video before closing the inbox.")
+            event.ignore()
+            return
+        if self.type_worker and self.type_worker.isRunning():
+            self.close_after_types = True
+            self.type_worker.requestInterruption()
+            self.statusBar().showMessage("Finishing the current video-type requests before closing…")
             event.ignore()
             return
         event.accept()

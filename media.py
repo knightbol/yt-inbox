@@ -65,6 +65,9 @@ def load_catalogue(paths, channel_id, restart=False):
                         raise core.InboxError("A saved video belongs to a different channel.")
                     db.execute("INSERT INTO catalogue VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
                                "title=excluded.title,position=excluded.position,generation=excluded.generation", entry)
+                for item in raw:
+                    if isinstance(item, dict):
+                        core.record_video_type(db, item["id"], core.short_from_metadata(item))
                 db.execute("INSERT INTO catalogue_state VALUES (?,?,?,?,?) ON CONFLICT(channel_id) DO UPDATE SET "
                            "next_start=excluded.next_start,exhausted=excluded.exhausted,generation=excluded.generation,updated=excluded.updated",
                            (channel_id, start + CATALOGUE_BATCH, int(exhausted), generation, time.time()))
@@ -83,10 +86,12 @@ def browse_page(paths, channel_id, query="", page=0):
                 "SELECT a.id,a.channel_id,COALESCE(v.title,a.title) AS title,COALESCE(v.published,0) AS published,"
                 "COALESCE(v.status,'baseline') AS status,c.name AS channel FROM catalogue a "
                 "JOIN channels c ON c.id=a.channel_id LEFT JOIN videos v ON v.id=a.id "
-                "WHERE c.active=1 AND a.channel_id=? ORDER BY a.generation DESC,a.position,a.id", (channel_id,))
+                "WHERE c.active=1 AND a.channel_id=? AND " + core.visibility_clause(core.hide_shorts(paths), "a") +
+                " ORDER BY a.generation DESC,a.position,a.id", (channel_id,))
         else:
             rows = db.execute("SELECT v.*,c.name AS channel FROM videos v JOIN channels c ON c.id=v.channel_id "
-                              "WHERE c.active=1 AND c.id=? AND v.published<=? ORDER BY v.published DESC,v.id",
+                              "WHERE c.active=1 AND c.id=? AND v.published<=? AND " + core.visibility_clause(core.hide_shorts(paths)) +
+                              " ORDER BY v.published DESC,v.id",
                               (channel_id, time.time()))
         query = query.casefold().strip()
         matches = [dict(r) for r in rows if not query or query in (r["title"] + " " + r["channel"]).casefold()]
@@ -140,7 +145,8 @@ def download_rows(paths):
             "COALESCE(v.published,0) AS published,COALESCE(v.status,'baseline') AS status,"
             "COALESCE(c.name,'Removed channel') AS channel FROM downloads d "
             "LEFT JOIN videos v ON v.id=d.id LEFT JOIN catalogue a ON a.id=d.id "
-            "LEFT JOIN channels c ON c.id=COALESCE(v.channel_id,a.channel_id) ORDER BY d.updated DESC,d.id")]
+            "LEFT JOIN channels c ON c.id=COALESCE(v.channel_id,a.channel_id) WHERE " + core.visibility_clause(core.hide_shorts(paths), "d") +
+            " ORDER BY d.updated DESC,d.id")]
     finally:
         db.close()
 
@@ -189,7 +195,8 @@ def recover_downloads(paths):
 def next_download(paths):
     db = core.connect(paths)
     try:
-        row = db.execute("SELECT id FROM downloads WHERE state='queued' ORDER BY updated,id LIMIT 1").fetchone()
+        row = db.execute("SELECT d.id FROM downloads d WHERE d.state='queued' AND " + core.visibility_clause(core.hide_shorts(paths), "d") +
+                         " ORDER BY d.updated,d.id LIMIT 1").fetchone()
         return row[0] if row else None
     finally:
         db.close()

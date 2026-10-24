@@ -18,7 +18,7 @@ def launch_notification(paths):
     db = core.connect(paths)
     try:
         today = dt.date.today().isoformat()
-        wanted = core.meta_get(db, "last_digest_day") != today and bool(core.notify_candidates(db))
+        wanted = core.meta_get(db, "last_digest_day") != today and bool(core.notify_candidates(db, core.hide_shorts(paths)))
     finally:
         db.close()
     if not wanted:
@@ -38,10 +38,10 @@ def notification(paths, test=False):
         proc = None
         try:
             today = dt.date.today().isoformat()
-            rows = core.notify_candidates(db)
+            rows = core.notify_candidates(db, core.hide_shorts(paths))
             if not test and (not rows or core.meta_get(db, "last_digest_day") == today):
                 return 0
-            total = db.execute("SELECT count(*) FROM videos v JOIN channels c ON c.id=v.channel_id WHERE c.active=1 AND v.status='pending'").fetchone()[0]
+            total = core.pending_count(db, core.hide_shorts(paths))
             if test:
                 summary, body = "YouTube Inbox is ready", "Open your inbox to manage channels and videos."
             else:

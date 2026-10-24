@@ -21,6 +21,7 @@ class MediaFixture:
         self.root = Path(self.temp.name)
         self.paths = core.Paths(self.root / "config", self.root / "data", self.root / "state")
         self.paths.ensure()
+        core.save_settings(self.paths, {"daily_time": "19:00", "player": "mpv", "hide_shorts": False})
         db = core.connect(self.paths)
         with db:
             db.execute("INSERT INTO channels(id,name,added_at) VALUES (?,?,?)", (C1, "Test channel", 100))

@@ -42,10 +42,11 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
-Version **1.2.0** adds offline downloads and a channel catalogue with no fixed total
-video limit. Install the new dependency if needed: `sudo pacman -S --needed ffmpeg`.
-Choose individual videos to download, or load a channel's older uploads in batches
-of 100. Catalogue import does not add those videos to your daily inbox.
+Version **1.3.0** adds **Settings → Hide Shorts**, enabled by default for new and
+existing installations. It filters all video lists, search results, counts and
+daily notifications. Offline downloads and the unlimited paged catalogue from
+1.2.0 remain available. Downloads require ffmpeg; install it if needed with
+`sudo pacman -S --needed ffmpeg`.
 
 ## First use
 
@@ -71,6 +72,32 @@ Ctrl+Z undoes the latest individual change, and Return plays the selected video.
 Multiple videos can be selected when changing status. Undo restores one video
 at a time. Close a playing video and wait for checks/catalogue pages to finish
 before closing the window. Finish or cancel active downloads in **Downloads**.
+
+## Hide Shorts
+
+**Settings → Hide Shorts** is on by default. Turn it off to show all video types.
+The filter uses YouTube's video-type metadata, not video length or `#shorts` in
+the title. Regular short videos and livestreams remain eligible to appear.
+
+Existing saved videos are classified in the background when the window opens.
+New uploads are classified during their checks. Results are cached, so successful
+classification is only needed once per video. Catalogue pages may initially show
+fewer entries while video types are being checked; the filter runs before page
+counts and search results are calculated.
+
+While the filter is on, unclassified videos stay hidden as well. A notice shows
+how many are awaiting checks. An internet connection and a current yt-dlp version
+are needed for this first classification. Failed checks retry after 15 minutes;
+**Check now** retries the current feeds immediately. Turn the filter off to access
+unclassified videos offline. Closing the window waits for the active metadata
+requests to finish, normally at most 20 seconds, and leaves remaining checks for
+the next launch.
+
+Hiding a video never deletes its status, history or downloaded file. Disable the
+filter to see or manage hidden downloads. Queued Shorts and unclassified videos
+wait while the filter is enabled; confirmed regular downloads can continue. The
+initial starting video for each channel is its latest confirmed non-Short when
+the filter is on. Watching or skipping that video prevents it being added again.
 
 ## Browse a channel's videos
 
@@ -223,7 +250,8 @@ without that limit, but only entries YouTube makes available in its upload list.
 Large channels take multiple batches. Uploads added or removed during a scan can
 shift page positions; refresh and scan again if the list changed. Cached entries
 are retained when an upload disappears from YouTube.
-Shorts/live announcements can appear; video-type filtering is not implemented.
+Shorts are hidden by default; disable **Hide Shorts** to show them. Live
+announcements can still appear.
 Live broadcasts are not recorded by the downloader. Deleted, private, restricted
 or otherwise unavailable uploads may fail to play or download. Watching somewhere else
 does not update this local inbox; no YouTube account history is read.
@@ -246,7 +274,9 @@ notification delivery/action handling and isolated installation. Regression test
 cover feed outages, fallback ownership validation, partial progress, exact-date
 handling and recovery without resetting watched/skipped history. Download tests
 cover sequential transfers, failures, cancellation, partial-file retention, queue
-recovery, output validation, file removal and offline playback selection. Run:
+recovery, output validation, file removal and offline playback selection. Shorts
+tests cover classification, retries, background checks, reversible filtering,
+notification suppression and filtering before catalogue pagination. Run:
 
 ```sh
 python3 -m unittest discover -s tests -v

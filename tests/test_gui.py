@@ -31,6 +31,7 @@ class GuiTests(unittest.TestCase):
         root = Path(self.temp.name)
         self.paths = core.Paths(root / "config", root / "data", root / "state")
         self.paths.ensure()
+        core.save_settings(self.paths, {"daily_time": "19:00", "player": "mpv", "hide_shorts": False})
         db = core.connect(self.paths)
         cid = "UC" + "x" * 22
         with db:
@@ -193,7 +194,7 @@ class GuiTests(unittest.TestCase):
         file = folder / "media.mkv"
         file.write_bytes(b"test media")
         media.finish_download(self.paths, video_id, file)
-        core.save_settings(self.paths, {"daily_time": "19:00", "player": "browser"})
+        core.save_settings(self.paths, {"daily_time": "19:00", "player": "browser", "hide_shorts": False})
         w = self.window
         w.view.setCurrentIndex(w.view.findData("downloads"))
         w.table.selectRow(0)
@@ -211,6 +212,39 @@ class GuiTests(unittest.TestCase):
         start.assert_not_called()
         warning.assert_called_once()
         self.assertFalse(w.play_button.isEnabled())
+
+    def test_hide_shorts_setting_refreshes_lists_and_counts_without_changing_history(self):
+        db = core.connect(self.paths)
+        with db:
+            core.record_video_type(db, "x" * 11, False)
+            core.record_video_type(db, "y" * 11, True)
+        before = [tuple(r) for r in db.execute("SELECT * FROM videos ORDER BY id")]
+        dialog = gui.SettingsDialog(self.paths, self.window)
+        self.assertFalse(dialog.hide_shorts.isChecked())
+        dialog.hide_shorts.setChecked(True)
+        dialog.save()
+        self.window.reload()
+        self.assertEqual(self.window.table.rowCount(), 1)
+        self.assertTrue(self.window.summary.text().startswith("1 unwatched"))
+        dialog.hide_shorts.setChecked(False)
+        dialog.save()
+        self.window.reload()
+        self.assertEqual(self.window.table.rowCount(), 2)
+        self.assertEqual([tuple(r) for r in db.execute("SELECT * FROM videos ORDER BY id")], before)
+        db.close()
+        dialog.deleteLater()
+
+    def test_unclassified_videos_have_visible_pending_notice(self):
+        values = core.settings(self.paths)
+        values["hide_shorts"] = True
+        core.save_settings(self.paths, values)
+        self.window.reload()
+        self.assertEqual(self.window.table.rowCount(), 0)
+        self.assertTrue(self.window.type_notice.isVisible())
+        self.assertIn("2 videos awaiting type checks", self.window.type_notice.text())
+        with patch.object(gui.TypeWorker, "start") as start:
+            self.window.check_video_types()
+        start.assert_called_once()
 
 
 if __name__ == "__main__":
