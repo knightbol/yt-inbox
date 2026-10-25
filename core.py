@@ -21,8 +21,9 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+import playback
 
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")
@@ -101,6 +102,8 @@ def settings(paths):
             raise ValueError("download_height must be 480, 720 or 1080")
         if type(data.get("hide_shorts", True)) is not bool:
             raise ValueError("hide_shorts must be true or false")
+        if data.get("playback_mode", playback.DEFAULT_MODE) not in playback.MODES:
+            raise ValueError("playback_mode must be auto, low, balanced, high or custom")
         return data
     except (OSError, ValueError, TypeError) as exc:
         raise InboxError(f"Invalid settings: {exc}") from exc

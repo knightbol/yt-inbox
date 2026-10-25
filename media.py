@@ -4,6 +4,7 @@ import shutil
 import time
 
 import core
+import playback
 
 CATALOGUE_BATCH = 100
 PAGE_SIZE = 50
@@ -218,7 +219,8 @@ def download_command(paths, video_id):
         raise core.InboxError("Install the missing download tools: " + ", ".join(missing))
     directory = download_directory(paths, video_id)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    height = core.settings(paths).get("download_height", 720)
+    preferences = core.settings(paths)
+    height = preferences.get("download_height", 720)
     template = str(directory.resolve()).replace("%", "%%") + "/media.%(ext)s"
     return [shutil.which("flock"), "--nonblock", "--conflict-exit-code", "75", str(directory / "download.lock"),
             shutil.which("yt-dlp"), "--ignore-config", "--no-playlist", "--no-simulate",
@@ -226,7 +228,7 @@ def download_command(paths, video_id):
             "--socket-timeout", "20", "--retries", "3", "--fragment-retries", "3",
             "--abort-on-unavailable-fragments", "--continue", "--part", "--no-overwrites",
             "--no-wait-for-video", "--match-filter", "!is_live",
-            "--format", f"bv*[height<={height}]+ba/b[height<={height}]", "--merge-output-format", "mkv",
+            "--format", playback.download_format(height, preferences.get("playback_mode", playback.DEFAULT_MODE)), "--merge-output-format", "mkv",
             "--output", template, "--print", "after_move:YT_INBOX_FILE:%(filepath)j",
             "--progress-template", "download:YT_INBOX_PROGRESS:%(progress._percent_str)s",
             "--", core.video_url(video_id)]

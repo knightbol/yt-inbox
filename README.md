@@ -42,9 +42,11 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
-Version **1.3.1** fixes mpv ignoring your configuration. Streaming and offline
-playback now load your normal mpv settings, key bindings and scripts, and follow
-your playback preferences, including quality, hardware decoding and resume behaviour.
+Version **1.4.0** adds **Settings → mpv playback**. **Auto** is the default for new
+and existing installations: it selects a screen-appropriate stream, requests
+hardware decoding and can retry lighter formats when needed. The inbox now shows
+the actual video codec, resolution and hardware/software decoding status.
+**Use my mpv configuration** retains the playback behaviour from 1.3.1.
 
 Version **1.3.0** added **Settings → Hide Shorts**, enabled by default for new and
 existing installations. It filters all video lists, search results, counts and
@@ -69,20 +71,64 @@ Opening a video, reaching its end, or closing the player never marks it watched.
 The inbox opens only the selected video and has no automatic next-video playback
 or recommendations view. mpv loads your normal configuration (usually
 `~/.config/mpv/mpv.conf`), `input.conf` and scripts for streaming and offline playback.
-Quality, window behaviour, hardware decoding and resume behaviour follow your mpv
-settings, or mpv's defaults when unset. To save your position automatically when
+Window behaviour, key bindings, scripts and resume behaviour follow your mpv
+settings, or mpv's defaults when unset. The playback mode controls streaming
+quality and hardware decoding unless you select **Use my mpv configuration**.
+To save your position automatically when
 closing mpv, set `save-position-on-quit=yes` in `mpv.conf`.
 
-The app only disables terminal interaction and, for local files, the online
-extractor. Ordinary streaming uses playback buffers; **Download offline** saves
-a persistent video file. The download quality setting applies to saved files;
-streaming quality follows mpv's `ytdl-format` setting.
+The app disables terminal keyboard input and captures player errors. Local files
+play with the online extractor disabled. Ordinary streaming uses playback buffers;
+**Download offline** saves a persistent video file.
 
 Ctrl+R checks for uploads, Ctrl+W marks selected videos watched, Ctrl+K skips them,
 Ctrl+Z undoes the latest individual change, and Return plays the selected video.
 Multiple videos can be selected when changing status. Undo restores one video
 at a time. Close a playing video and wait for checks/catalogue pages to finish
 before closing the window. Finish or cancel active downloads in **Downloads**.
+
+## Playback on different computers
+
+Select a mode in **Settings → mpv playback**. Changes apply to the next video:
+
+| Mode | Streaming behaviour |
+| --- | --- |
+| **Auto** (default) | Starts at 720p, 1080p, 1440p or 4K according to the inbox's current screen. Avoids AV1 and requests hardware decoding. Can step down automatically. |
+| **Low power** | Up to 720p / 30 fps; prefers H.264, falls back to other non-AV1 formats. |
+| **Balanced** | Up to 1080p / 60 fps, excluding AV1. |
+| **High quality** | Up to 4K / 60 fps, including AV1. Intended for capable hardware. |
+| **Use my mpv configuration** | Your mpv configuration controls quality and decoding, including any `hwdec` or `ytdl-format` settings. |
+
+All modes load your normal mpv configuration, bindings and scripts. The first four
+override only stream selection and request `hwdec=auto`; they do not edit
+`mpv.conf`. All player launches also load a small bundled status script. There are
+no hardware benchmark downloads or additional packages to install.
+
+Auto checks mpv's actual decoder every two seconds. After startup, software decoding
+can trigger a switch to H.264, then a 720p software fallback. Sustained frame drops
+can trigger further reductions, down to 480p. A video can step down at most three
+times; quality does not oscillate. A switch briefly reloads the same video in the
+same player window and restores its position. Completed reductions are remembered
+for subsequent videos on that screen until the inbox closes or settings are saved.
+
+Auto does not restart paused, buffering or non-seekable video, streams without a
+known duration, or playback at a speed other than 1×. It ignores brief startup/seek disruptions. Unknown decoder
+status is never treated as proof of software decoding. If an eligible format is
+unavailable, playback reports an error instead of silently selecting unrestricted
+quality. The status line in the inbox shows the actual result; an active hardware
+decoder is reported by name, such as `vaapi`, `nvdec` or `videotoolbox`.
+
+Auto is a conservative compatibility policy, not a temperature controller or a
+guarantee for every GPU/driver combination. It cannot repair missing drivers,
+override expensive custom shaders, change browser playback, or change the codec
+of an existing offline file. Offline playback requests hardware decoding (except
+in **Use my mpv configuration**) and reports the actual decoder, but does not
+re-encode or redownload the file automatically.
+
+For new offline downloads, **Auto** and **Low power** prefer H.264 and exclude AV1;
+**Balanced** also excludes AV1. **High quality** and **Use my mpv configuration**
+allow AV1. The separate **Offline download quality** setting remains the resolution
+limit. Low power also caps new downloads at 30 fps. Existing downloads are retained.
 
 ## Hide Shorts
 
@@ -91,6 +137,8 @@ The filter uses YouTube's video-type metadata, not video length or `#shorts` in
 the title. Regular short videos and livestreams remain eligible to appear.
 
 Existing saved videos are classified in the background when the window opens.
+Background classification pauses while an inbox-launched mpv player is open;
+an already running metadata request may take up to 20 seconds to finish.
 New uploads are classified during their checks. Results are cached, so successful
 classification is only needed once per video. Catalogue pages may initially show
 fewer entries while video types are being checked; the filter runs before page
@@ -287,7 +335,13 @@ handling and recovery without resetting watched/skipped history. Download tests
 cover sequential transfers, failures, cancellation, partial-file retention, queue
 recovery, output validation, file removal and offline playback selection. Shorts
 tests cover classification, retries, background checks, reversible filtering,
-notification suppression and filtering before catalogue pagination. Run:
+notification suppression and filtering before catalogue pagination.
+Playback tests cover mode migration, bounded format selection, incremental status
+messages, preserving watch history, restoring position on adaptation, sustained
+frame drops and avoiding retries during pauses, seeks, buffering or unknown-duration streams.
+Format selection tests use yt-dlp when installed; adaptation tests use an available
+Lua 5.2+ shared library. A real mpv smoke test checks script options and configuration
+loading when mpv is installed. Run:
 
 ```sh
 python3 -m unittest discover -s tests -v

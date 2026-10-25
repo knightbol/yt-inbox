@@ -165,7 +165,9 @@ class MediaTests(MediaFixture, unittest.TestCase):
         self.assertIn("--no-playlist", command)
         self.assertIn("--continue", command)
         self.assertIn("--abort-on-unavailable-fragments", command)
-        self.assertEqual(command[command.index("--format") + 1], "bv*[height<=720]+ba/b[height<=720]")
+        selection = command[command.index("--format") + 1]
+        self.assertTrue(all("[height<=720]" in branch for branch in selection.split("/")))
+        self.assertIn("[vcodec!^=av01]", selection)
         self.assertEqual(command[-2:], ["--", core.video_url(V1)])
 
 

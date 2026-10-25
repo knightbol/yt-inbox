@@ -234,6 +234,45 @@ class GuiTests(unittest.TestCase):
         db.close()
         dialog.deleteLater()
 
+    def test_playback_mode_is_saved_and_decoder_status_does_not_change_history(self):
+        dialog = gui.SettingsDialog(self.paths, self.window)
+        self.assertEqual(dialog.playback_mode.currentData(), "auto")
+        dialog.playback_mode.setCurrentIndex(dialog.playback_mode.findData("high"))
+        dialog.save()
+        self.assertEqual(core.settings(self.paths)["playback_mode"], "high")
+        w = self.window
+        w.table.selectRow(0)
+        before = [dict(r) for r in core.queue_rows(self.paths)]
+        with patch("gui.shutil.which", return_value="/usr/bin/mpv"), patch.object(gui.QProcess, "start"):
+            w.play()
+        proc = w.players[-1]
+        data = b'YT_INBOX_PLAYBACK:{"event":"status","height":2160,"codec":"av1","hwdec":"nvdec","stage":0,"online":true}\n'
+        with patch.object(gui.QProcess, "readAllStandardOutput", return_value=data):
+            w.player_output(proc)
+        self.assertIn("2160p AV1", w.playback_info.text())
+        self.assertIn("hardware decoding (nvdec)", w.playback_info.text())
+        self.assertEqual([dict(r) for r in core.queue_rows(self.paths)], before)
+        self.assertFalse(w.auto_stages)  # Explicit modes do not affect Auto's session cache.
+        dialog.deleteLater()
+
+    def test_auto_reuses_only_completed_adaptation_and_custom_preserves_mpv_preferences(self):
+        w = self.window
+        w.table.selectRow(0)
+        with patch("gui.shutil.which", return_value="/usr/bin/mpv"), patch.object(gui.QProcess, "start"):
+            w.play()
+        proc = w.players[-1]
+        for event in ("adjusting", "status"):
+            data = ('YT_INBOX_PLAYBACK:{"event":"' + event + '","height":720,"codec":"h264","hwdec":"no","stage":2,"online":true}\n').encode()
+            with patch.object(gui.QProcess, "readAllStandardOutput", return_value=data):
+                w.player_output(proc)
+            self.assertEqual(w.auto_stages.get(proc.auto_key, 0), 2 if event == "status" else 0)
+        values = core.settings(self.paths)
+        values["playback_mode"] = "custom"
+        core.save_settings(self.paths, values)
+        with patch("gui.shutil.which", return_value="/usr/bin/mpv"), patch.object(gui.QProcess, "start"):
+            w.play()
+        self.assertFalse(any(arg.startswith(("--hwdec=", "--ytdl-format=", "--no-config")) for arg in w.players[-1].arguments()))
+
     def test_unclassified_videos_have_visible_pending_notice(self):
         values = core.settings(self.paths)
         values["hide_shorts"] = True

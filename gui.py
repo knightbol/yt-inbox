@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 
 import core
 import media
+import playback
 import video_types
 from transfers import DownloadQueue
 
@@ -114,6 +115,16 @@ class SettingsDialog(QDialog):
         self.player.addItem("Default web browser", "browser")
         self.player.setCurrentIndex(0 if current["player"] == "mpv" else 1)
         layout.addRow("Default player", self.player)
+        self.playback_mode = QComboBox()
+        for value, label in playback.MODES.items():
+            self.playback_mode.addItem(label, value)
+        self.playback_mode.setCurrentIndex(self.playback_mode.findData(current.get("playback_mode", playback.DEFAULT_MODE)))
+        layout.addRow("mpv playback", self.playback_mode)
+        playback_note = QLabel("Auto matches the screen and retries lighter formats when needed. "
+                               "Your window settings, key bindings and scripts still load. "
+                               "Choose Use my mpv configuration to control quality and decoding yourself.")
+        playback_note.setWordWrap(True)
+        layout.addRow(playback_note)
         self.quality = QComboBox()
         for height in (480, 720, 1080):
             self.quality.addItem(f"Up to {height}p", height)
@@ -135,7 +146,8 @@ class SettingsDialog(QDialog):
 
     def save(self):
         values = {"daily_time": self.daily.time().toString("HH:mm"), "player": self.player.currentData(),
-                  "download_height": self.quality.currentData(), "hide_shorts": self.hide_shorts.isChecked()}
+                  "download_height": self.quality.currentData(), "hide_shorts": self.hide_shorts.isChecked(),
+                  "playback_mode": self.playback_mode.currentData()}
         try:
             old = core.settings(self.paths)
             core.save_settings(self.paths, values)
@@ -162,6 +174,7 @@ class Window(QMainWindow):
         self.browse_key = None
         self.download_records = {}
         self.players = []
+        self.auto_stages = {}
         self.rows = []
         self.signature = None
         body_font = QFont(self.font())
@@ -312,6 +325,11 @@ class Window(QMainWindow):
         self.download_info.setTextFormat(Qt.TextFormat.PlainText)
         self.download_info.setWordWrap(True)
         layout.addWidget(self.download_info)
+        self.playback_info = QLabel("")
+        self.playback_info.setTextFormat(Qt.TextFormat.PlainText)
+        self.playback_info.setWordWrap(True)
+        self.playback_info.hide()
+        layout.addWidget(self.playback_info)
         for keys, function in (("Ctrl+R", self.check), ("Ctrl+Z", self.undo), ("Ctrl+W", lambda: self.change("watched")), ("Ctrl+K", lambda: self.change("skipped")), ("Return", self.play)):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.activated.connect(function)
@@ -529,7 +547,8 @@ class Window(QMainWindow):
             self.check()
 
     def edit_settings(self):
-        SettingsDialog(self.paths, self).exec()
+        if SettingsDialog(self.paths, self).exec() == QDialog.DialogCode.Accepted:
+            self.auto_stages.clear()
         if not core.hide_shorts(self.paths) and self.type_worker and self.type_worker.isRunning():
             self.type_worker.requestInterruption()
         self.reload()
@@ -538,6 +557,8 @@ class Window(QMainWindow):
 
     def check_video_types(self):
         if self.close_after_types or self.check_after_types or not core.hide_shorts(self.paths):
+            return
+        if any(p.state() != QProcess.ProcessState.NotRunning for p in self.players):
             return
         if (self.type_worker and self.type_worker.isRunning()) or (self.worker and self.worker.isRunning()):
             return
@@ -608,12 +629,18 @@ class Window(QMainWindow):
             return
         proc = QProcess(self)
         proc.video_id = row["id"]
+        proc.video_title = row["title"]
+        proc.playback_text = "Opening video…"
+        proc.playback_buffer = b""
+        proc.mode = core.settings(self.paths).get("playback_mode", playback.DEFAULT_MODE)
+        screen = self.screen()
+        height = screen.size().height() * screen.devicePixelRatio() if screen else 1080
+        refresh = screen.refreshRate() if screen else 60
+        proc.auto_key = (screen.name() if screen else "", height, refresh)
         proc.setProgram(shutil.which("mpv"))
-        # Load the user's mpv config, bindings and scripts. Playback preferences
-        # passed on the command line would override their mpv.conf settings.
-        arguments = ["--no-terminal"]
-        arguments += ["--ytdl=no", "--", str(local)] if local else ["--", core.video_url(row["id"])]
-        proc.setArguments(arguments)
+        proc.setArguments(playback.arguments(local or core.video_url(row["id"]), proc.mode,
+                          local=bool(local), height=height, refresh_rate=refresh,
+                          stage=self.auto_stages.get(proc.auto_key, 0)))
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.log = ""
         proc.failed = False
@@ -621,17 +648,37 @@ class Window(QMainWindow):
         proc.errorOccurred.connect(lambda _: self.player_failed(proc))
         proc.finished.connect(lambda code, _: self.player_finished(proc, code))
         self.players.append(proc)
+        if self.type_worker and self.type_worker.isRunning():
+            self.type_worker.requestInterruption()
         proc.start()
+        self.update_playback_info()
         self.selection_changed()
 
     def player_output(self, proc):
-        proc.log = (proc.log + bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace"))[-5000:]
+        proc.playback_buffer, messages, log = playback.read_messages(proc.playback_buffer, bytes(proc.readAllStandardOutput()))
+        if log:
+            proc.log = (proc.log + log + "\n")[-5000:]
+        for data in messages:
+            message = playback.status_message(data)
+            if message:
+                proc.playback_text = message
+            stage = data.get("stage")
+            if (proc.mode == "auto" and data.get("online") is True and data.get("event") == "status"
+                    and type(stage) is int and 0 <= stage <= 3):
+                self.auto_stages[proc.auto_key] = max(stage, self.auto_stages.get(proc.auto_key, 0))
+        if messages:
+            self.update_playback_info()
+
+    def update_playback_info(self):
+        self.playback_info.setText("\n".join(f"{p.video_title[:90]} · {p.playback_text}" for p in self.players))
+        self.playback_info.setVisible(bool(self.players))
 
     def player_failed(self, proc):
         proc.failed = True
         QMessageBox.warning(self, "Playback failed", "mpv could not start. The video's status has not changed.\n" + proc.errorString())
         if proc.state() == QProcess.ProcessState.NotRunning and proc in self.players:
             self.players.remove(proc)
+        self.update_playback_info()
         self.selection_changed()
 
     def player_finished(self, proc, code):
@@ -645,7 +692,9 @@ class Window(QMainWindow):
         if proc in self.players:
             self.players.remove(proc)
         proc.deleteLater()
+        self.update_playback_info()
         self.selection_changed()
+        self.check_video_types()
 
     def closeEvent(self, event):
         # Avoid killing a check midway or terminating a video when the list is closed.
