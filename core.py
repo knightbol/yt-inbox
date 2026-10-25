@@ -22,7 +22,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")

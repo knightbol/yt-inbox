@@ -609,8 +609,10 @@ class Window(QMainWindow):
         proc = QProcess(self)
         proc.video_id = row["id"]
         proc.setProgram(shutil.which("mpv"))
-        arguments = ["--no-config", "--no-terminal", "--force-window=yes", "--keep-open=no", "--save-position-on-quit", "--resume-playback=yes", "--hwdec=auto-safe"]
-        arguments += ["--ytdl=no", "--", str(local)] if local else ["--ytdl=yes", "--ytdl-format=bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", "--", core.video_url(row["id"])]
+        # Load the user's mpv config, bindings and scripts. Playback preferences
+        # passed on the command line would override their mpv.conf settings.
+        arguments = ["--no-terminal"]
+        arguments += ["--ytdl=no", "--", str(local)] if local else ["--", core.video_url(row["id"])]
         proc.setArguments(arguments)
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         proc.log = ""

@@ -42,7 +42,11 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
-Version **1.3.0** adds **Settings → Hide Shorts**, enabled by default for new and
+Version **1.3.1** fixes mpv ignoring your configuration. Streaming and offline
+playback now load your normal mpv settings, key bindings and scripts, and follow
+your playback preferences, including quality, hardware decoding and resume behaviour.
+
+Version **1.3.0** added **Settings → Hide Shorts**, enabled by default for new and
 existing installations. It filters all video lists, search results, counts and
 daily notifications. Offline downloads and the unlimited paged catalogue from
 1.2.0 remain available. Downloads require ffmpeg; install it if needed with
@@ -62,10 +66,17 @@ daily notifications. Offline downloads and the unlimited paged catalogue from
    from Unwatched. **Restore** in Watched/Skipped or **Undo** brings it back.
 
 Opening a video, reaching its end, or closing the player never marks it watched.
-There is no automatic next-video playback or recommendations view. The dedicated
-mpv launch ignores your normal mpv configuration and requests at most 1080p where
-available. Ordinary streaming uses playback buffers; **Download offline** saves
-a persistent video file. mpv may retain a resume position locally.
+The inbox opens only the selected video and has no automatic next-video playback
+or recommendations view. mpv loads your normal configuration (usually
+`~/.config/mpv/mpv.conf`), `input.conf` and scripts for streaming and offline playback.
+Quality, window behaviour, hardware decoding and resume behaviour follow your mpv
+settings, or mpv's defaults when unset. To save your position automatically when
+closing mpv, set `save-position-on-quit=yes` in `mpv.conf`.
+
+The app only disables terminal interaction and, for local files, the online
+extractor. Ordinary streaming uses playback buffers; **Download offline** saves
+a persistent video file. The download quality setting applies to saved files;
+streaming quality follows mpv's `ytdl-format` setting.
 
 Ctrl+R checks for uploads, Ctrl+W marks selected videos watched, Ctrl+K skips them,
 Ctrl+Z undoes the latest individual change, and Return plays the selected video.
