@@ -150,7 +150,7 @@ class SettingsDialog(QDialog):
                   "playback_mode": self.playback_mode.currentData()}
         try:
             old = core.settings(self.paths)
-            core.save_settings(self.paths, values)
+            core.save_settings(self.paths, dict(old, **values))
             if old["daily_time"] != values["daily_time"]:
                 from install import update_schedule
                 notice = update_schedule(self.paths, values["daily_time"])
@@ -740,20 +740,21 @@ def run(paths):
         QLocalServer.removeServer(name)
         if not server.listen(name):
             raise core.InboxError("Could not create the inbox's local window connection.")
-    window = Window(paths)
+    with core.interface_lock(paths):
+        window = Window(paths)
 
-    def activate():
-        while server.hasPendingConnections():
-            connection = server.nextPendingConnection()
-            connection.disconnectFromServer()
-            connection.deleteLater()
-        window.showNormal()
-        window.raise_()
-        window.activateWindow()
+        def activate():
+            while server.hasPendingConnections():
+                connection = server.nextPendingConnection()
+                connection.disconnectFromServer()
+                connection.deleteLater()
+            window.showNormal()
+            window.raise_()
+            window.activateWindow()
 
-    server.newConnection.connect(activate)
-    window.show()
-    urls, _ = core.parse_channels(paths.channels.read_text(encoding="utf-8"))
-    if not urls:
-        QTimer.singleShot(250, window.edit_channels)
-    return app.exec()
+        server.newConnection.connect(activate)
+        window.show()
+        urls, _ = core.parse_channels(paths.channels.read_text(encoding="utf-8"))
+        if not urls:
+            QTimer.singleShot(250, window.edit_channels)
+        return app.exec()

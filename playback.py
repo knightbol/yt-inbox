@@ -50,20 +50,25 @@ def download_format(height, mode=DEFAULT_MODE):
                            prefer_h264=mode in ("auto", "low"))
 
 
-def arguments(source, mode=DEFAULT_MODE, local=False, height=1080, refresh_rate=60, stage=0):
+def arguments(source, mode=DEFAULT_MODE, local=False, height=1080, refresh_rate=60, stage=0,
+              interactive=False, drm=False):
     if mode not in MODES:
         raise ValueError("Unknown playback mode")
     formats = auto_formats(height, refresh_rate)
     stage = min(3, max(0, int(stage))) if mode == "auto" and not local else 0
-    # A pipe captures errors without creating a terminal or taking keyboard input.
-    args = ["--terminal=yes", "--input-terminal=no", "--term-status-msg=", "--msg-level=all=warn",
+    # GUI captures output; the TUI hands the real terminal to mpv until it exits.
+    args = ["--terminal=yes", "--input-terminal=" + ("yes" if interactive else "no"),
+            "--term-status-msg=", "--msg-level=all=warn",
             "--script=" + str(Path(__file__).with_name("playback.lua").resolve())]
-    opts = {"mode": mode, "online": "no" if local else "yes", "stage": stage}
+    opts = {"mode": mode, "online": "no" if local else "yes", "stage": stage,
+            "telemetry": "no" if interactive else "yes"}
     opts.update({"format" + str(index): value for index, value in enumerate(formats)})
     # Map-option append takes ONE key/value pair; commas become part of its value.
     args.extend("--script-opts-append=yt_inbox-" + key + "=" + str(value) for key, value in opts.items())
     if mode != "custom":
         args.append("--hwdec=auto")
+    if drm:
+        args.extend(["--vo=gpu", "--gpu-context=drm", "--gpu-api=opengl"])
     if local:
         args.append("--ytdl=no")
     elif mode != "custom":

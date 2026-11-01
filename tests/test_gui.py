@@ -235,11 +235,13 @@ class GuiTests(unittest.TestCase):
         dialog.deleteLater()
 
     def test_playback_mode_is_saved_and_decoder_status_does_not_change_history(self):
+        core.save_settings(self.paths, dict(core.settings(self.paths), terminal_only=True))
         dialog = gui.SettingsDialog(self.paths, self.window)
         self.assertEqual(dialog.playback_mode.currentData(), "auto")
         dialog.playback_mode.setCurrentIndex(dialog.playback_mode.findData("high"))
         dialog.save()
         self.assertEqual(core.settings(self.paths)["playback_mode"], "high")
+        self.assertTrue(core.settings(self.paths)["terminal_only"])
         w = self.window
         w.table.selectRow(0)
         before = [dict(r) for r in core.queue_rows(self.paths)]

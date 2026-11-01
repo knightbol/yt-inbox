@@ -95,9 +95,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="A daily YouTube inbox with explicit watched/skipped tracking.")
     parser.add_argument("--version", action="version", version=core.VERSION)
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("gui", help="Open the desktop inbox (default)")
+    sub.add_parser("gui", help="Open the desktop inbox")
+    tui = sub.add_parser("tui", aliases=["tty"], help="Open the keyboard-only terminal inbox")
+    tui.add_argument("--video-output", choices=("auto", "drm", "window"), default="auto",
+                     help="Auto uses DRM on a local Linux VT, a window in a desktop terminal")
     check = sub.add_parser("check", help="Fetch new uploads now")
     check.add_argument("--scheduled", action="store_true", help="Use daily deduplication, retries and notification")
+    check.add_argument("--no-notify", action="store_true", help="Check without a desktop notification (terminal installs)")
     sub.add_parser("notify", help="Deliver the daily digest (used by systemd)")
     sub.add_parser("test-notification", help="Send a test notification with an Open inbox button")
     listing = sub.add_parser("list", help="Print pending video titles and links")
@@ -111,7 +115,13 @@ def main(argv=None):
     paths = core.Paths.discover()
     paths.ensure()
     try:
-        if args.command in (None, "gui"):
+        if args.command is None:
+            args.command = "tui" if (core.settings(paths).get("terminal_only", False) or
+                                    not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))) else "gui"
+        if args.command in ("tui", "tty"):
+            from tui import run
+            return run(paths, output=getattr(args, "video_output", "auto"))
+        if args.command == "gui":
             from gui import run
             return run(paths)
         if args.command == "check":
@@ -124,7 +134,7 @@ def main(argv=None):
             for error in result["errors"]:
                 print(error, file=sys.stderr)
             # Send a partial digest if a channel is down, then retry only failed channels.
-            notify_ok = launch_notification(paths) if args.scheduled else True
+            notify_ok = launch_notification(paths) if args.scheduled and not args.no_notify else True
             return int(bool(result["errors"]) or not notify_ok)
         if args.command in ("notify", "test-notification"):
             return notification(paths, test=args.command == "test-notification")

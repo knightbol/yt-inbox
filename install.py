@@ -59,12 +59,15 @@ def update_schedule(paths, daily_time):
     return ""
 
 
-def install(paths, enable=True):
+def install(paths, enable=True, terminal_only=None):
     paths.ensure()
+    preferences = core.settings(paths)
+    if terminal_only is None:
+        terminal_only = preferences.get("terminal_only", False)
     source = Path(__file__).resolve().parent
     app = paths.data / "app"
     app.mkdir(parents=True, exist_ok=True)
-    for name in ("playback.py", "playback.lua", "core.py", "media.py", "video_types.py", "transfers.py", "cli.py", "gui.py", "install.py", "README.md"):
+    for name in ("playback.py", "playback.lua", "core.py", "media.py", "video_types.py", "transfers.py", "terminal.py", "tui.py", "cli.py", "gui.py", "install.py", "README.md"):
         target = app / name
         if source / name != target:
             # Replace code atomically. Existing preferences and database are preserved.
@@ -79,9 +82,9 @@ def install(paths, enable=True):
 Type=Application
 Name=YouTube Inbox
 Comment=Daily uploads from your chosen channels
-Exec={desktop_quote(launcher)} gui
+Exec={desktop_quote(launcher)} {'tui' if terminal_only else 'gui'}
 Icon=video-x-generic
-Terminal=false
+Terminal={'true' if terminal_only else 'false'}
 Categories=AudioVideo;Network;
 StartupNotify=true
 """)
@@ -92,7 +95,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
-ExecStart={base} check --scheduled
+ExecStart={base} check --scheduled{' --no-notify' if terminal_only else ''}
 Restart=on-failure
 RestartSec=15min
 TimeoutStartSec=30min
@@ -123,11 +126,15 @@ ExecStart={base} gui
 UMask=0077
 """)
     core.atomic_write(units / "yt-inbox-check.timer", timer_text(core.settings(paths)["daily_time"]))
+    preferences["terminal_only"] = terminal_only
+    core.save_settings(paths, preferences)
     if enable:
         variables = [name for name in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_CURRENT_DESKTOP", "QT_QPA_PLATFORMTHEME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME") if name in os.environ]
         if variables:
             systemctl("import-environment", *variables)
         systemctl("daemon-reload")
+        if terminal_only:
+            systemctl("stop", "yt-inbox-notify.service")
         systemctl("enable", "--now", "yt-inbox-check.timer")
     return launcher
 
@@ -151,6 +158,11 @@ def main():
     parser = argparse.ArgumentParser(description="Install YouTube Inbox for your user account")
     parser.add_argument("--no-enable", action="store_true", help="Write files without enabling systemd (for staging/testing)")
     parser.add_argument("--uninstall", action="store_true")
+    interface = parser.add_mutually_exclusive_group()
+    interface.add_argument("--terminal", dest="terminal_only", action="store_true", default=None,
+                           help="Use the TUI by default; no PySide6 or desktop notifications required")
+    interface.add_argument("--desktop", dest="terminal_only", action="store_false",
+                           help="Use the desktop app and enable desktop notifications")
     args = parser.parse_args()
     if os.geteuid() == 0 and not os.environ.get("YT_INBOX_HOME"):
         parser.error("Run this installer as your normal user, without sudo.")
@@ -158,24 +170,31 @@ def main():
     if args.uninstall:
         uninstall(paths)
         return 0
+    paths.ensure()
+    terminal_only = args.terminal_only if args.terminal_only is not None else core.settings(paths).get("terminal_only", False)
     if not args.no_enable:
         missing = []
-        try:
-            import PySide6.QtWidgets
-        except ImportError:
-            missing.append("pyside6")
-        for command, package in (("mpv", "mpv"), ("yt-dlp", "yt-dlp"), ("ffmpeg", "ffmpeg"), ("deno", "deno"), ("notify-send", "libnotify")):
+        if not terminal_only:
+            try:
+                import PySide6.QtWidgets
+            except ImportError:
+                missing.append("pyside6")
+        required = [("mpv", "mpv"), ("yt-dlp", "yt-dlp"), ("ffmpeg", "ffmpeg"), ("deno", "deno")]
+        if not terminal_only:
+            required.append(("notify-send", "libnotify"))
+        for command, package in required:
             if not shutil.which(command):
                 missing.append(package)
         if missing:
-            print("Install the required Arch packages first:\n\nsudo pacman -S --needed python pyside6 mpv yt-dlp ffmpeg deno libnotify", file=sys.stderr)
+            packages = "python mpv yt-dlp ffmpeg deno" + ("" if terminal_only else " pyside6 libnotify")
+            print("Install the required Arch packages first:\n\nsudo pacman -S --needed " + packages, file=sys.stderr)
             return 1
     try:
-        launcher = install(paths, not args.no_enable)
+        launcher = install(paths, not args.no_enable, terminal_only=terminal_only)
     except (OSError, core.InboxError) as exc:
         print(f"Installation incomplete: {exc}\nRun the installer again after resolving this error.", file=sys.stderr)
         return 1
-    print(f"Installed YouTube Inbox.\n\nOpen it from your application launcher, or run:\n{launcher}\n\nDaily check: {core.settings(paths)['daily_time']} local time\nChannels: {paths.channels}\nWatched history is preserved when reinstalling.")
+    print(f"Installed YouTube Inbox ({'terminal' if terminal_only else 'desktop'}).\n\nRun:\n{launcher}\n\nDaily check: {core.settings(paths)['daily_time']} local time\nChannels: {paths.channels}\nWatched history is preserved when reinstalling.")
     return 0
 
 

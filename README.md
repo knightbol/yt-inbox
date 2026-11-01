@@ -1,7 +1,8 @@
 # YouTube Inbox
 
-A native desktop inbox for Arch Linux/KDE. Maintain a text file of channels,
-get one daily upload notification, and keep a finite list of unwatched videos.
+A desktop and terminal inbox for Arch Linux. Maintain a text file of channels,
+check for daily uploads, and keep a finite list of unwatched videos. The desktop
+interface also delivers a daily notification.
 
 > **Written with AI:** The initial application, interface, tests and documentation
 > were written with OpenAI ChatGPT/Codex, guided by the project owner's requirements
@@ -42,6 +43,11 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
+Version **1.5.0** adds `yt-inbox tui` (also `yt-inbox tty`): a keyboard-only inbox
+that shares your channels, history, filters and downloads with the desktop app.
+It supports full-screen mpv video on a local Linux VT through DRM/EGL and can be
+installed without Qt. See **Terminal and TTY use** below.
+
 Version **1.4.0** adds **Settings → mpv playback**. **Auto** is the default for new
 and existing installations: it selects a screen-appropriate stream, requests
 hardware decoding and can retry lighter formats when needed. The inbox now shows
@@ -77,7 +83,7 @@ quality and hardware decoding unless you select **Use my mpv configuration**.
 To save your position automatically when
 closing mpv, set `save-position-on-quit=yes` in `mpv.conf`.
 
-The app disables terminal keyboard input and captures player errors. Local files
+The desktop app disables terminal keyboard input and captures player errors. Local files
 play with the online extractor disabled. Ordinary streaming uses playback buffers;
 **Download offline** saves a persistent video file.
 
@@ -86,6 +92,88 @@ Ctrl+Z undoes the latest individual change, and Return plays the selected video.
 Multiple videos can be selected when changing status. Undo restores one video
 at a time. Close a playing video and wait for checks/catalogue pages to finish
 before closing the window. Finish or cancel active downloads in **Downloads**.
+
+## Terminal and TTY use
+
+For an existing desktop installation, update normally and run:
+
+```sh
+~/.local/bin/yt-inbox tui
+```
+
+Close the desktop inbox first. Only one interface can own the download queue at a
+time. Channels, watched/skipped history, catalogue entries, settings and saved
+files are shared; no migration or new subscription list is needed.
+
+For a machine used only from a terminal, install without PySide6 or libnotify:
+
+```sh
+sudo pacman -S --needed python mpv yt-dlp ffmpeg deno
+bash install.sh --terminal
+~/.local/bin/yt-inbox
+```
+
+Reinstalling remembers this choice. `bash install.sh --desktop` switches back to
+desktop mode (with its dependencies installed). The ordinary desktop installation
+includes both interfaces. With no display-server environment, the launcher opens
+the terminal interface automatically; `tui` and `gui` explicitly choose one.
+The terminal interface needs at least 60 columns and 18 rows.
+
+| Key | Action |
+| --- | --- |
+| Up/Down or j/k | Select an entry |
+| 1 / 2 / 3 / 4 / 5 | Unwatched / Watched / Skipped / Downloads / Channels |
+| Enter | Play the selected video, or browse the selected channel |
+| w / x / a / u | Mark watched / skip / add to inbox / undo |
+| / | Search titles/channels in the loaded entries; empty search clears it |
+| [ / ] | Previous / next page of 50 cached entries |
+| n / N | In a channel, load the next 100 older entries / restart from newest |
+| d | Download the selected video; Ctrl+C cancels and keeps partial files |
+| D | Remove selected offline files after confirmation |
+| r / t | Check uploads / classify the next batch of unknown video types |
+| e | Edit channels in `$VISUAL`, `$EDITOR`, nano or vi; then r applies changes |
+| m / v / s | Cycle playback mode / download quality / toggle Hide Shorts |
+| g / ? / q | Reload saved lists / show help / quit |
+
+There is no automatic catalogue crawl, infinite scroll, autoplay or background
+metadata scan in the terminal interface. Network tasks run in the foreground and
+show their result before returning. With Hide Shorts on, unknown entries remain
+hidden: **t** checks up to 12 more at a time, with the same cached results and retry
+delay as the desktop app. The pending count is visible. Lists and downloaded
+videos remain usable offline; disable the filter with **s** if needed to access
+previously unclassified files.
+
+**Playing video without X11 or Wayland:** log in to an active local Linux VT, such
+as tty3 (usually reached with Ctrl+Alt+F3), then run `yt-inbox tui`. Selecting a video
+starts mpv with `--vo=gpu --gpu-context=drm --gpu-api=opengl`. It displays normal
+full-screen video through the graphics driver. This requires a compatible
+DRM/KMS/EGL stack, permissions provided by the local login session, and an mpv
+build with DRM support. Actual support depends on the GPU and driver; it is not
+guaranteed on every machine. Audio also needs a working local audio setup.
+See the [mpv manual](https://mpv.io/manual/stable/) for DRM and decoder options.
+
+mpv keeps the keyboard: Space pauses, arrows seek, **q** returns to the inbox.
+Your mpv configuration, bindings and scripts still load; terminal input and the
+DRM video output are selected by the app for this use. Auto starts at up to **720p**
+in the TUI because terminal dimensions do not reveal the display's pixel size;
+hardware decoding and lighter-format retries remain enabled. Use **m** to select
+Low power, Balanced, High quality or your own configuration. Auto does not measure
+temperature. Existing offline files are played as saved, without transcoding.
+
+Inside a desktop terminal, the list stays in the terminal and mpv opens a normal
+window. SSH, tmux and other pseudoterminals are not mistaken for local VTs; browsing
+and downloading work there, but direct DRM playback requires the local console.
+`tui --video-output window` explicitly requests a desktop window. The app does not
+change drivers, permissions or display-manager settings, and does not silently
+fall back to the software-only `--vo=drm` renderer. If playback fails, its error is
+shown before returning to the inbox.
+
+Enter prefers a saved offline file. Playback never marks a video watched; press
+**w** yourself. Terminal downloads run one selected video at a time; existing queue
+entries wait until you select them and press **d**, or open the desktop app. Daily
+checks still run via the user timer in a terminal-only installation, but do not
+launch desktop notifications or open a player. New videos appear when the inbox
+is opened or you press **g**. Check errors are available through `yt-inbox status`.
 
 ## Playback on different computers
 
@@ -273,7 +361,9 @@ Standard XDG config/data/state directory overrides are respected. `YT_INBOX_HOME
 isolates application files for development/testing; leave it unset for installation.
 
 ```sh
-yt-inbox                     # Open the window
+yt-inbox                     # Open the desktop, or TUI without a display server
+yt-inbox tui                 # Keyboard-only inbox; local VT uses DRM video
+yt-inbox gui                 # Explicitly open the desktop interface
 yt-inbox check               # Fetch now without a desktop notification
 yt-inbox list                # Print pending titles and direct links
 yt-inbox list --json
@@ -350,6 +440,12 @@ python3 -m unittest discover -s tests -v
 Qt UI verification uses the offscreen backend. Actual YouTube fetching, KDE
 notification rendering and mpv streaming still depend on your local session and
 network; they cannot be established by fixture tests alone.
+
+Terminal tests cover shared status/filter/catalogue state, offline selection,
+bounded DRM playback arguments, terminal restoration, download completion and
+cancellation, interface ownership, notification-free installation, and a real
+pseudoterminal session without Qt. DRM scan-out and GPU decoding must be checked
+on an actual local Linux console; they cannot be validated in a headless container.
 
 Built with Python's standard library plus PySide6. Uses YouTube Atom feeds,
 yt-dlp for channel resolution, catalogue lookup and downloads, ffmpeg for audio/video

@@ -124,7 +124,7 @@ LUA = next((ctypes.util.find_library(name) for name in ("lua5.4", "lua5.3", "lua
 
 @unittest.skipUnless(LUA, "a Lua 5.2+ shared library is needed for adaptation scenarios")
 class AdaptationTests(unittest.TestCase):
-    def run_scenario(self, scenario, mode="auto", online="yes"):
+    def run_scenario(self, scenario, mode="auto", online="yes", telemetry="yes"):
         lib = ctypes.CDLL(LUA)
         lib.luaL_newstate.restype = ctypes.c_void_p
         lib.luaL_openlibs.argtypes = [ctypes.c_void_p]
@@ -147,7 +147,7 @@ local fake={get_time=function() return clock end, get_property=get, get_property
     commandv=function(...) table.insert(commands,{...}) end}
 package.preload["mp"]=function() return fake end
 package.preload["mp.options"]=function() return {read_options=function(opts)
-    opts.mode=MODE; opts.online=ONLINE
+    opts.mode=MODE; opts.online=ONLINE; opts.telemetry=TELEMETRY
     for i=0,3 do opts["format"..i]="format"..i end
 end} end
 package.preload["mp.utils"]=function() return {format_json=function(data) table.insert(output,data); return "{}" end} end
@@ -159,7 +159,7 @@ function tick(seconds,changes)
 end
 function loaded() hooks.on_load(); events["file-loaded"]() end
 '''
-        source = ("MODE=" + json.dumps(mode) + "; ONLINE=" + json.dumps(online) + "\n" + harness + "\n" + script + "\nloaded()\n" + scenario).encode()
+        source = ("MODE=" + json.dumps(mode) + "; ONLINE=" + json.dumps(online) + "; TELEMETRY=" + json.dumps(telemetry) + "\n" + harness + "\n" + script + "\nloaded()\n" + scenario).encode()
         state = lib.luaL_newstate()
         try:
             lib.luaL_openlibs(state)
@@ -172,6 +172,9 @@ function loaded() hooks.on_load(); events["file-loaded"]() end
 
     def test_hardware_accelerated_4k_stays_at_selected_quality(self):
         self.run_scenario('for i=1,40 do tick(2) end; assert(#commands==0); assert(output[#output].hwdec=="vaapi")')
+
+    def test_terminal_adapts_without_printing_status_protocol(self):
+        self.run_scenario('tick(4,{["hwdec-current"]="no"}); assert(#commands==1); assert(#output==0)', telemetry="no")
 
     def test_software_fallback_preserves_position_and_stops_at_720p(self):
         self.run_scenario('''

@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 import playback
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")
@@ -102,6 +102,8 @@ def settings(paths):
             raise ValueError("download_height must be 480, 720 or 1080")
         if type(data.get("hide_shorts", True)) is not bool:
             raise ValueError("hide_shorts must be true or false")
+        if type(data.get("terminal_only", False)) is not bool:
+            raise ValueError("terminal_only must be true or false")
         if data.get("playback_mode", playback.DEFAULT_MODE) not in playback.MODES:
             raise ValueError("playback_mode must be auto, low, balanced, high or custom")
         return data
@@ -120,6 +122,20 @@ def exclusive_lock(path):
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise Busy("Another check is already running. The inbox will update when it finishes.") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def interface_lock(paths):
+    """Keep GUI and TUI download queue ownership in one process."""
+    with open(paths.state / "interface.lock", "a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise InboxError("Another inbox interface is open. Close it before opening this one.") from exc
         try:
             yield
         finally:

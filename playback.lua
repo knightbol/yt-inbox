@@ -2,7 +2,7 @@
 local mp = require "mp"
 local options = require "mp.options"
 local utils = require "mp.utils"
-local opts = {mode="custom", online="no", stage=0,
+local opts = {mode="custom", online="no", stage=0, telemetry="yes",
               format0="", format1="", format2="", format3=""}
 options.read_options(opts, "yt_inbox")
 
@@ -12,6 +12,7 @@ local last_seek = 0
 local changing = false
 
 local function emit(data)
+    if opts.telemetry ~= "yes" then return end
     data.stage = stage
     data.online = opts.online == "yes"
     io.stdout:write("YT_INBOX_PLAYBACK:" .. utils.format_json(data) .. "\n")
