@@ -67,7 +67,7 @@ def install(paths, enable=True, terminal_only=None):
     source = Path(__file__).resolve().parent
     app = paths.data / "app"
     app.mkdir(parents=True, exist_ok=True)
-    for name in ("playback.py", "playback.lua", "core.py", "media.py", "video_types.py", "transfers.py", "terminal.py", "tui.py", "cli.py", "gui.py", "install.py", "README.md"):
+    for name in ("playback.py", "playback.lua", "core.py", "media.py", "video_types.py", "transfers.py", "tmux_playback.py", "terminal.py", "tui.py", "cli.py", "gui.py", "install.py", "README.md"):
         target = app / name
         if source / name != target:
             # Replace code atomically. Existing preferences and database are preserved.

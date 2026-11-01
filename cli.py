@@ -98,7 +98,7 @@ def main(argv=None):
     sub.add_parser("gui", help="Open the desktop inbox")
     tui = sub.add_parser("tui", aliases=["tty"], help="Open the keyboard-only terminal inbox")
     tui.add_argument("--video-output", choices=("auto", "drm", "window"), default="auto",
-                     help="Auto uses DRM on a local Linux VT, a window in a desktop terminal")
+                     help="Auto uses DRM on a local Linux VT (including tmux), a window in a desktop terminal")
     check = sub.add_parser("check", help="Fetch new uploads now")
     check.add_argument("--scheduled", action="store_true", help="Use daily deduplication, retries and notification")
     check.add_argument("--no-notify", action="store_true", help="Check without a desktop notification (terminal installs)")

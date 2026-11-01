@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 import playback
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")

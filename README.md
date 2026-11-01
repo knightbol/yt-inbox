@@ -43,6 +43,10 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
+Version **1.5.1** adds full-screen playback from tmux on a local Linux TTY. The
+local client temporarily hands its real terminal to mpv, then reattaches to the
+same session. Panes and running programs remain in the tmux server.
+
 Version **1.5.0** adds `yt-inbox tui` (also `yt-inbox tty`): a keyboard-only inbox
 that shares your channels, history, filters and downloads with the desktop app.
 It supports full-screen mpv video on a local Linux VT through DRM/EGL and can be
@@ -161,8 +165,21 @@ Low power, Balanced, High quality or your own configuration. Auto does not measu
 temperature. Existing offline files are played as saved, without transcoding.
 
 Inside a desktop terminal, the list stays in the terminal and mpv opens a normal
-window. SSH, tmux and other pseudoterminals are not mistaken for local VTs; browsing
-and downloading work there, but direct DRM playback requires the local console.
+window. **tmux on a local TTY is also supported:** start `yt-inbox tui` in a pane
+and select a video normally. The app checks the attached client's actual terminal,
+temporarily detaches that client to give mpv the real TTY, and reattaches to the same
+session when the player exits. The video occupies the whole display, not one pane.
+Other panes and their programs keep running. mpv retains Space/arrows/q; tmux key
+bindings are available again after playback. Watch status remains manual.
+
+This handoff requires exactly one normal, writable client attached to the session.
+Multiple attached clients are rejected rather than choosing another user's screen.
+The app also refuses to detach sessions configured with `destroy-unattached` or
+`exit-unattached`, preserving their running programs.
+SSH, nested tmux, GNU screen and other pseudoterminals are not mistaken for local
+VTs; browsing and downloading work there, but direct DRM playback requires a local
+VT or a tmux client directly attached to one. The terminal-only install does not
+require tmux unless you use this feature. Its `detach-client -E` support is needed.
 `tui --video-output window` explicitly requests a desktop window. The app does not
 change drivers, permissions or display-manager settings, and does not silently
 fall back to the software-only `--vo=drm` renderer. If playback fails, its error is
@@ -446,6 +463,9 @@ bounded DRM playback arguments, terminal restoration, download completion and
 cancellation, interface ownership, notification-free installation, and a real
 pseudoterminal session without Qt. DRM scan-out and GPU decoding must be checked
 on an actual local Linux console; they cannot be validated in a headless container.
+When tmux and local Unix sockets are available, an isolated server and pseudoterminal test verify
+the client handoff, keyboard input, reattachment, retained panes and playback errors.
+Client selection tests reject detached, remote, shared and read-only sessions.
 
 Built with Python's standard library plus PySide6. Uses YouTube Atom feeds,
 yt-dlp for channel resolution, catalogue lookup and downloads, ffmpeg for audio/video

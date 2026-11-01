@@ -11,6 +11,7 @@ import unicodedata
 import core
 import media
 import playback
+import tmux_playback
 
 
 def plain(value):
@@ -37,12 +38,13 @@ def local_vt():
         return False
 
 
-def play_command(paths, video_id, output="auto"):
+def play_command(paths, video_id, output="auto", tmux_client=None):
     if output not in ("auto", "drm", "window"):
         raise core.InboxError("Unknown video output.")
-    drm = output == "drm" or (output == "auto" and local_vt())
-    if drm and not local_vt():
-        raise core.InboxError("DRM playback needs a local Linux virtual console (/dev/tty1, tty2, ...), not SSH or a terminal window.")
+    console = local_vt() or bool(tmux_client)
+    drm = output == "drm" or (output == "auto" and console)
+    if drm and not console:
+        raise core.InboxError("DRM playback needs a local Linux virtual console (/dev/tty1, tty2, ...), directly or through one attached tmux client.")
     if not drm and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         raise core.InboxError("No graphical display or local Linux console found. Browse/download here; play from a local TTY or desktop session.")
     if not shutil.which("mpv"):
@@ -61,7 +63,11 @@ def play_command(paths, video_id, output="auto"):
 
 
 def play(paths, video_id, output="auto"):
-    command = play_command(paths, video_id, output)
+    client = tmux_playback.local_client() if output != "window" and not local_vt() else None
+    command = play_command(paths, video_id, output, tmux_client=client)
+    if client:
+        tmux_playback.play(paths, command, client)
+        return "Playback closed. Press w to mark watched."
     print("mpv: Space pauses; arrows seek; q returns to the inbox.\n", flush=True)
     proc = subprocess.Popen(command)  # Keep stdin and the foreground terminal.
     try:
