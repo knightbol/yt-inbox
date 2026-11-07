@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 import playback
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 RECENT_UPLOADS = 15
 FALLBACK_SECONDS = 120
 CHANNEL_RE = re.compile(r"UC[A-Za-z0-9_-]{22}\Z")
@@ -179,6 +179,9 @@ def connect(paths):
       CREATE TABLE IF NOT EXISTS video_types(
         id TEXT PRIMARY KEY, is_short INTEGER CHECK(is_short IN (0,1)),
         checked REAL NOT NULL, retry_after REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS sync_records(
+        kind TEXT NOT NULL, key TEXT NOT NULL, record TEXT NOT NULL,
+        PRIMARY KEY(kind,key));
     """)
     return db
 
@@ -508,6 +511,14 @@ def cycle_key(daily_time, now=None):
 
 
 def run_check(paths, scheduled=False, now=None, fetcher=fetch, resolver=resolve_channel):
+    import syncing
+    syncing.try_sync(paths)
+    result = _run_check(paths, scheduled, now, fetcher, resolver)
+    syncing.kick(paths)
+    return result
+
+
+def _run_check(paths, scheduled=False, now=None, fetcher=fetch, resolver=resolve_channel):
     import video_types
     paths.ensure()
     now = time.time() if now is None else now
@@ -608,6 +619,7 @@ def recent_channel_rows(paths, channel_id, now=None):
 
 
 def set_status(paths, ids, status):
+    import syncing
     if status not in ("pending", "watched", "skipped"):
         raise ValueError("Invalid video status")
     db = connect(paths)
@@ -627,11 +639,14 @@ def set_status(paths, ids, status):
                     stamp = time.time()
                     db.execute("INSERT INTO actions(video_id,old_status,new_status,happened) VALUES (?,?,?,?)", (video_id, old[0], status, stamp))
                     db.execute("UPDATE videos SET status=?,changed=? WHERE id=?", (status, stamp, video_id))
+                    syncing.record_status(db, video_id)
     finally:
         db.close()
+    syncing.kick(paths)
 
 
 def undo(paths):
+    import syncing
     db = connect(paths)
     try:
         with db:
@@ -640,9 +655,11 @@ def undo(paths):
                 return False
             db.execute("UPDATE videos SET status=?,changed=? WHERE id=?", (row["old_status"], time.time(), row["video_id"]))
             db.execute("UPDATE actions SET undone=1 WHERE id=?", (row["id"],))
-            return True
+            syncing.record_status(db, row["video_id"])
     finally:
         db.close()
+    syncing.kick(paths)
+    return True
 
 
 def video_url(video_id):

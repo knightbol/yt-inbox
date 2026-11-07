@@ -43,6 +43,10 @@ Close the inbox, download and extract the latest repository ZIP, then run
 **Check now**. There is no need to delete the database or re-enter your channels.
 Check the installed version with `~/.local/bin/yt-inbox --version`.
 
+Version **1.6.0** adds optional channel and watch-history sync through a separate
+private GitHub repository. It uses Python's standard library: no Git client,
+Syncthing, additional Python package or server to run. See **Sync between computers**.
+
 Version **1.5.1** adds full-screen playback from tmux on a local Linux TTY. The
 local client temporarily hands its real terminal to mpv, then reattaches to the
 same session. Panes and running programs remain in the tmux server.
@@ -63,6 +67,82 @@ existing installations. It filters all video lists, search results, counts and
 daily notifications. Offline downloads and the unlimited paged catalogue from
 1.2.0 remain available. Downloads require ffmpeg; install it if needed with
 `sudo pacman -S --needed ffmpeg`.
+
+## Sync between computers
+
+Sync is optional and off until configured. It shares channel subscriptions and
+the current status of videos (Unwatched, Watched, Skipped, including Restore and
+Undo). The computers can connect at different times. It does not use YouTube
+account history or upload downloaded videos, playback positions, local file
+paths, catalogue pages, notifications, machine settings or credentials.
+
+1. Update/install version 1.6.0 on **both computers**, keeping their existing data.
+2. In your GitHub account, create a **separate private repository**, for example
+   `yt-inbox-sync`. Initialize it with a README. Do not use the public application
+   repository. Keep the sync repository private permanently: its Git history
+   contains your subscriptions and watched/skipped history.
+3. Under GitHub **Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens**, create a token. Select your account as resource owner,
+   **Only select repositories → yt-inbox-sync**, and repository permission
+   **Contents: Read and write**. Metadata read access is included by GitHub.
+   A separate token per computer lets you revoke one independently.
+4. On each computer, run this as your normal user, replacing `YOUR_USER`:
+
+   ```sh
+   yt-inbox sync setup YOUR_USER/yt-inbox-sync
+   ```
+
+   Paste that computer's token into the hidden local prompt. Do not put it in
+   a command argument, a chat message, `channels.txt`, or the repository. Setup
+   checks repository privacy and identity, saves a consistent SQLite backup
+   (`~/.local/share/yt-inbox/before-sync.sqlite3`) and channel backup
+   (`~/.config/yt-inbox/channels.before-sync.txt`), then merges existing history.
+
+The existing systemd user manager runs sync every five minutes while you are
+logged in. Opening the app, changing a video status or saving channels also
+requests a sync. A check pulls shared state before fetching uploads. No extra
+package, Git executable or continuously running sync process is required.
+The GUI has a **Sync** button and status/error text; the TUI has **S** and shows
+sync failures. Channel additions still need **Check now** / **r** or the normal
+daily check to fetch uploads.
+
+```sh
+yt-inbox sync          # Wait for a sync now; useful before shutting down
+yt-inbox sync status   # Repository, last successful sync and error
+yt-inbox sync disable  # Remove this PC's saved token and stop its sync timer
+```
+
+Offline changes stay local until a later successful sync. Finish a manual sync
+before shutting down if you need the other PC to receive your latest changes
+immediately. If the command reports busy, wait for the current check/sync and
+run it again. Ordinary viewing and manual status changes work without GitHub.
+Failures are visible; they do not discard the local changes. Re-run setup with
+a new token when a token expires. Reinstalling preserves sync configuration.
+
+The first pairing takes the union of existing channels and history. For a video
+with conflicting **pre-sync** states, Watched takes precedence over Skipped,
+then Unwatched. Once paired, each explicit action has a logical revision. A
+change made after receiving another change wins; concurrent changes to the
+same item use a deterministic revision/device order, not the PCs' wall clocks.
+Changes to different items are combined. To resolve an unwanted concurrent
+choice, sync, select the desired status, and sync again. Remotely superseded
+local actions are excluded from Undo. Channel removals have persistent
+tombstones so an offline PC cannot silently restore an old subscription.
+
+Only canonical channel links are shared; comments and existing line formatting
+remain local. Use the app's channel editor, or finish external edits before
+syncing. Never copy/synchronize the live `inbox.sqlite3`, its WAL files, or the
+entire application directory between PCs. Each installation keeps its own
+database and device identity. Downloads and machine preferences remain local.
+
+The token is stored in `~/.config/yt-inbox/sync.json`, readable only by your user
+(mode 0600). Transfers use HTTPS. The private repository is **not end-to-end
+encrypted**; anyone you grant repository access can read its data. Sync refuses
+a repository observed to be public, including a visibility check before every
+upload. This cannot undo exposure if you later make the repository public.
+Disabling sync leaves both local history and the remote repository intact.
+The state file is bounded at 16 MB; exceeding the limit reports an error and
+retains local data rather than truncating history.
 
 ## First use
 
@@ -135,17 +215,21 @@ The terminal interface needs at least 60 columns and 18 rows.
 | d | Download the selected video; Ctrl+C cancels and keeps partial files |
 | D | Remove selected offline files after confirmation |
 | r / t | Check uploads / classify the next batch of unknown video types |
+| S | Synchronize channels and watch history now (when configured) |
 | e | Edit channels in `$VISUAL`, `$EDITOR`, nano or vi; then r applies changes |
 | m / v / s | Cycle playback mode / download quality / toggle Hide Shorts |
 | g / ? / q | Reload saved lists / show help / quit |
 
 There is no automatic catalogue crawl, infinite scroll, autoplay or background
-metadata scan in the terminal interface. Network tasks run in the foreground and
+metadata scan in the terminal interface. Upload/catalogue tasks run in the foreground and
 show their result before returning. With Hide Shorts on, unknown entries remain
 hidden: **t** checks up to 12 more at a time, with the same cached results and retry
 delay as the desktop app. The pending count is visible. Lists and downloaded
 videos remain usable offline; disable the filter with **s** if needed to access
 previously unclassified files.
+
+When enabled, channel/history synchronization runs separately in the background.
+It does not scan channel catalogues or download videos.
 
 **Playing video without X11 or Wayland:** log in to an active local Linux VT, such
 as tty3 (usually reached with Ctrl+Alt+F3), then run `yt-inbox tui`. Selecting a video

@@ -67,7 +67,7 @@ def install(paths, enable=True, terminal_only=None):
     source = Path(__file__).resolve().parent
     app = paths.data / "app"
     app.mkdir(parents=True, exist_ok=True)
-    for name in ("playback.py", "playback.lua", "core.py", "media.py", "video_types.py", "transfers.py", "tmux_playback.py", "terminal.py", "tui.py", "cli.py", "gui.py", "install.py", "README.md"):
+    for name in ("playback.py", "playback.lua", "core.py", "syncing.py", "media.py", "video_types.py", "transfers.py", "tmux_playback.py", "terminal.py", "tui.py", "cli.py", "gui.py", "install.py", "README.md"):
         target = app / name
         if source / name != target:
             # Replace code atomically. Existing preferences and database are preserved.
@@ -126,6 +126,27 @@ ExecStart={base} gui
 UMask=0077
 """)
     core.atomic_write(units / "yt-inbox-check.timer", timer_text(core.settings(paths)["daily_time"]))
+    core.atomic_write(units / "yt-inbox-sync.service", f"""[Unit]
+Description=Synchronize YouTube Inbox channels and watch history
+
+[Service]
+Type=oneshot
+ExecStart={base} sync --quiet
+TimeoutStartSec=4min
+UMask=0077
+""")
+    core.atomic_write(units / "yt-inbox-sync.timer", """[Unit]
+Description=Synchronize YouTube Inbox every five minutes
+
+[Timer]
+OnStartupSec=45s
+OnUnitInactiveSec=5min
+AccuracySec=15s
+Unit=yt-inbox-sync.service
+
+[Install]
+WantedBy=timers.target
+""")
     preferences["terminal_only"] = terminal_only
     core.save_settings(paths, preferences)
     if enable:
@@ -136,14 +157,17 @@ UMask=0077
         if terminal_only:
             systemctl("stop", "yt-inbox-notify.service")
         systemctl("enable", "--now", "yt-inbox-check.timer")
+        if (paths.config / "sync.json").is_file():
+            systemctl("enable", "--now", "yt-inbox-sync.timer")
     return launcher
 
 
 def uninstall(paths):
     bindir, units, desktops = locations(paths)
     subprocess.run(["systemctl", "--user", "disable", "--now", "yt-inbox-check.timer"], capture_output=True)
-    subprocess.run(["systemctl", "--user", "stop", "yt-inbox-check.service", "yt-inbox-notify.service", "yt-inbox-gui.service"], capture_output=True)
-    for name in ("yt-inbox-check.timer", "yt-inbox-check.service", "yt-inbox-notify.service", "yt-inbox-gui.service"):
+    subprocess.run(["systemctl", "--user", "disable", "--now", "yt-inbox-sync.timer"], capture_output=True)
+    subprocess.run(["systemctl", "--user", "stop", "yt-inbox-check.service", "yt-inbox-notify.service", "yt-inbox-gui.service", "yt-inbox-sync.service"], capture_output=True)
+    for name in ("yt-inbox-check.timer", "yt-inbox-check.service", "yt-inbox-notify.service", "yt-inbox-gui.service", "yt-inbox-sync.timer", "yt-inbox-sync.service"):
         (units / name).unlink(missing_ok=True)
     (bindir / "yt-inbox").unlink(missing_ok=True)
     (desktops / "yt-inbox.desktop").unlink(missing_ok=True)

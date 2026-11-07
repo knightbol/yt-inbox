@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
     QTableWidget, QTableWidgetItem, QTimeEdit, QVBoxLayout, QWidget)
 
 import core
+import syncing
 import media
 import playback
 import video_types
@@ -71,7 +72,8 @@ class ChannelsDialog(QDialog):
         self.resize(650, 430)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("One channel link or @handle per line. Lines starting with # are comments."))
-        self.editor = QPlainTextEdit(paths.channels.read_text(encoding="utf-8"))
+        self.original = paths.channels.read_text(encoding="utf-8")
+        self.editor = QPlainTextEdit(self.original)
         self.editor.setPlaceholderText("https://www.youtube.com/@TechnologyConnections\n@YourOtherChannel")
         layout.addWidget(self.editor)
         note = QLabel("The first complete check adds each channel's latest video. New uploads are tracked after that.")
@@ -93,8 +95,8 @@ class ChannelsDialog(QDialog):
             self.error.setText("\n".join(errors))
             return
         try:
-            core.atomic_write(self.paths.channels, text.rstrip() + "\n")
-        except OSError as exc:
+            syncing.save_channels(self.paths, text.rstrip() + "\n", self.original)
+        except (OSError, core.InboxError) as exc:
             self.error.setText(str(exc))
             return
         self.accept()
@@ -203,6 +205,9 @@ class Window(QMainWindow):
         options = QPushButton("Settings")
         options.clicked.connect(self.edit_settings)
         header.addWidget(options)
+        sync_button = QPushButton("Sync")
+        sync_button.clicked.connect(self.sync_now)
+        header.addWidget(sync_button)
         self.refresh_button = QPushButton("Check now")
         self.refresh_button.clicked.connect(self.check)
         header.addWidget(self.refresh_button)
@@ -214,6 +219,10 @@ class Window(QMainWindow):
         self.warning.setWordWrap(True)
         self.warning.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.warning)
+        self.sync_notice = QLabel("")
+        self.sync_notice.setTextFormat(Qt.TextFormat.PlainText)
+        self.sync_notice.setWordWrap(True)
+        layout.addWidget(self.sync_notice)
         self.type_notice = QLabel("")
         self.type_notice.setWordWrap(True)
         self.type_notice.setTextFormat(Qt.TextFormat.PlainText)
@@ -350,6 +359,13 @@ class Window(QMainWindow):
     def selected(self):
         return [self.rows[index.row()] for index in self.table.selectionModel().selectedRows() if index.row() < len(self.rows)]
 
+    def sync_now(self):
+        if not syncing.configured(self.paths):
+            QMessageBox.information(self, "Set up sync", "Create a separate private GitHub repository, then run in a terminal:\n\nyt-inbox sync setup OWNER/REPO\n\nThe token is entered in a hidden prompt. See README: Sync between computers.")
+            return
+        syncing.kick(self.paths)
+        self.sync_notice.setText("Sync requested. " + syncing.status(self.paths))
+
     def reload_if_changed(self):
         signature = tuple((p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else None for p in (self.paths.database, self.paths.database.with_name(self.paths.database.name + "-wal")))
         if signature != self.signature:
@@ -442,6 +458,10 @@ class Window(QMainWindow):
         self.summary.setText(f"{count} unwatched · {channels} channel{'s' if channels != 1 else ''} · Last complete check: {when}")
         self.warning.setText("Some channels could not be checked. Try Check now; scheduled checks retry automatically.\n" + errors[:800] if errors else "")
         self.warning.setVisible(bool(errors))
+        try:
+            self.sync_notice.setText(syncing.status(self.paths) if syncing.configured(self.paths) else "")
+        except core.InboxError as exc:
+            self.sync_notice.setText(str(exc))
         remaining = video_types.pending_count(self.paths) if core.hide_shorts(self.paths) else 0
         self.type_notice.setText(f"Hide Shorts is on · {remaining} videos awaiting type checks.\n"
                                  "Checks run in the background and failures retry automatically. Settings lets you show all videos.")

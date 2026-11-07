@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import core
+import syncing
 
 
 def launch_notification(paths):
@@ -111,17 +112,39 @@ def main(argv=None):
         action.add_argument("ids", nargs="+")
     sub.add_parser("undo", help="Undo the latest status change")
     sub.add_parser("status", help="Print paths, channel errors and last check")
+    sync_parser = sub.add_parser("sync", help="Synchronize channels and history through a private GitHub repository")
+    sync_parser.add_argument("sync_action", nargs="?", choices=("now", "setup", "status", "disable"), default="now")
+    sync_parser.add_argument("repository", nargs="?", help="OWNER/REPO (setup only)")
+    sync_parser.add_argument("--quiet", action="store_true", help="Suppress successful output (used by the user service)")
     args = parser.parse_args(argv)
     paths = core.Paths.discover()
     paths.ensure()
     try:
+        if args.command == "sync":
+            if args.sync_action == "setup":
+                if not args.repository:
+                    raise core.InboxError("Use: yt-inbox sync setup OWNER/REPO")
+                result = syncing.setup(paths, args.repository)
+            elif args.repository:
+                raise core.InboxError("A repository argument is only accepted by sync setup.")
+            elif args.sync_action == "status":
+                result = syncing.status(paths)
+            elif args.sync_action == "disable":
+                result = syncing.disable(paths)
+            else:
+                result = syncing.sync(paths)
+            if not args.quiet:
+                print(result)
+            return 0
         if args.command is None:
             args.command = "tui" if (core.settings(paths).get("terminal_only", False) or
                                     not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))) else "gui"
         if args.command in ("tui", "tty"):
+            syncing.kick(paths)
             from tui import run
             return run(paths, output=getattr(args, "video_output", "auto"))
         if args.command == "gui":
+            syncing.kick(paths)
             from gui import run
             return run(paths)
         if args.command == "check":
@@ -161,8 +184,12 @@ def main(argv=None):
                 print("Errors: " + (core.meta_get(db, "last_errors") or "None"))
             finally:
                 db.close()
+            print(syncing.status(paths))
         return 0
-    except core.Busy:
+    except core.Busy as exc:
+        if args.command == "sync":
+            print(f"Sync is busy: {exc}", file=sys.stderr)
+            return 1
         return 0
     except (core.InboxError, OSError, ImportError) as exc:
         print(f"YouTube Inbox: {exc}", file=sys.stderr)

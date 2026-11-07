@@ -13,6 +13,9 @@ venv/
 # Personal subscriptions, runtime state and credentials
 channels.txt
 settings.json
+sync.json
+yt-inbox-state.json
+channels.before-sync.txt
 *.sqlite*
 *.db
 *.db-*

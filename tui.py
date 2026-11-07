@@ -11,6 +11,7 @@ import sys
 import textwrap
 
 import core
+import syncing
 import media
 import playback
 import terminal
@@ -33,7 +34,8 @@ HELP = [
     "m: cycle playback mode   v: cycle download quality   s: toggle Shorts",
     "g: reload saved lists   Esc: clear search / back to channels   q: quit",
     "mpv: Space pauses, arrows seek, q returns; it never marks watched",
-    "Network tasks run only on request. Lists and saved files work offline.",
+    "S: sync channels/history now (configure with yt-inbox sync setup OWNER/REPO)",
+    "Upload/catalogue tasks run on request. Configured sync also runs in background.",
 ]
 
 
@@ -78,6 +80,13 @@ class Inbox:
         self.downloads = media.download_records(self.paths)
         self.preferences = core.settings(self.paths)
         self.pending_types = video_types.pending_count(self.paths) if core.hide_shorts(self.paths) else 0
+        self.sync_error = ""
+        if syncing.configured(self.paths):
+            db = core.connect(self.paths)
+            try:
+                self.sync_error = core.meta_get(db, "sync_error")
+            finally:
+                db.close()
 
     def selected(self):
         return self.rows[self.cursor] if self.rows else None
@@ -122,10 +131,11 @@ class Inbox:
             for index, line in enumerate(lines[:2]):
                 self.put(height - 8 + index, line, curses.A_BOLD)
             self.put(height - 6, "https://www.youtube.com/channel/" + row["id"] if self.view == "5" else core.video_url(row["id"]))
-        self.put(height - 5, f"{self.pending_types} hidden pending type checks; t checks next batch, s toggles filter." if self.pending_types else "")
+        self.put(height - 5, "Sync: " + self.sync_error if self.sync_error else
+                 f"{self.pending_types} hidden pending type checks; t checks next batch, s toggles filter." if self.pending_types else "")
         self.put(height - 4, self.message)
         self.put(height - 3, "Enter play | w watched | x skip | a inbox | d download | / search")
-        self.put(height - 2, "[ ] pages | n older | r check | e channels | m mode | ? help | q quit")
+        self.put(height - 2, "[ ] pages | n older | r check | S sync | e channels | ? help | q quit")
         self.screen.refresh()
 
     def prompt(self, label):
@@ -190,12 +200,14 @@ class Inbox:
         command = shlex.split(editor) if editor else [shutil.which("nano") or shutil.which("vi") or ""]
         if not command or not command[0]:
             raise core.InboxError(f"Set EDITOR or edit {self.paths.channels} yourself.")
-        result = subprocess.run([*command, str(self.paths.channels)])
+        with syncing.channel_lock(self.paths):
+            result = subprocess.run([*command, str(self.paths.channels)])
         if result.returncode:
             raise core.InboxError("Editor exited with an error.")
         _, errors = core.parse_channels(self.paths.channels.read_text(encoding="utf-8"))
         if errors:
             raise core.InboxError("\n".join(errors))
+        syncing.kick(self.paths)
         return "Channels saved. Press r to check and apply the list."
 
     def setting(self, key, choices):
@@ -230,6 +242,8 @@ class Inbox:
                 self.view, self.page, self.cursor = "5", 0, 0
         elif key == "r":
             self.external("Checking uploads... Ctrl+C cancels.", self.check)
+        elif key == "S":
+            self.external("Synchronizing channels and history...", lambda: syncing.sync(self.paths))
         elif key == "t":
             self.external("Checking a batch of video types...", lambda: f"Classified {video_types.classify_saved(self.paths)} videos. Press t again for another batch.")
         elif key in ("n", "N") and self.view == "browse":
@@ -277,7 +291,14 @@ class Inbox:
             pass
         while True:
             self.draw()
-            key = self.screen.get_wch()
+            self.screen.timeout(2000 if syncing.configured(self.paths) else -1)
+            try:
+                key = self.screen.get_wch()
+            except curses.error:
+                self.reload()
+                continue
+            finally:
+                self.screen.timeout(-1)
             if key == "q":
                 return 0
             if min(self.screen.getmaxyx()[0] - 18, self.screen.getmaxyx()[1] - 60) < 0:
