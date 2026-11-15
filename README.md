@@ -8,6 +8,10 @@ interface also delivers a daily notification.
 > were written with OpenAI ChatGPT/Codex, guided by the project owner's requirements
 > and feedback.
 
+**Native C version:** [build and install the CLI/TUI](native/README.md), or follow
+the [Portuguese code study guide](native/ESTUDAR.md). The C version shares the
+existing history and sync format; the desktop GUI remains available in Python.
+
 ## Project status
 
 This is an early personal project. Automated tests cover the inbox and its interface,
@@ -551,7 +555,16 @@ When tmux and local Unix sockets are available, an isolated server and pseudoter
 the client handoff, keyboard input, reattachment, retained panes and playback errors.
 Client selection tests reject detached, remote, shared and read-only sessions.
 
-Built with Python's standard library plus PySide6. Uses YouTube Atom feeds,
+A native **C CLI/TUI** is also available in [`native/`](native/README.md), including
+the core, channel catalogue, downloads, private GitHub sync and user-local
+installer. It shares this application's data formats. Build it with
+`make -C native`; run `./native/build/yt-inbox-c tui`. Native installation is
+explicit and does not replace the Python launcher unless `install --primary`
+is selected. The [Portuguese study guide](native/ESTUDAR.md) explains the modules,
+memory ownership, SQLite transactions and process handling. The desktop GUI
+remains Python/PySide6; the native runtime retains the small mpv Lua extension.
+
+The original implementation is built with Python's standard library plus PySide6. Uses YouTube Atom feeds,
 yt-dlp for channel resolution, catalogue lookup and downloads, ffmpeg for audio/video
 merging, mpv for streaming and offline playback, and libnotify/systemd
 for desktop notifications and scheduling. No API key or subscription required.

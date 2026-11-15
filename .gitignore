@@ -38,3 +38,6 @@ downloads/
 # Release archives are generated separately
 *.tar.gz
 *.zip
+
+# Isolated native learning profile
+native-demo/
