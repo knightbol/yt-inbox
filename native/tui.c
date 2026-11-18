@@ -1,6 +1,6 @@
 /* Finite pages, explicit actions, no autoplay or recommendations. */
 #include "inbox.h"
-#include <ncursesw/curses.h>
+#include <curses.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
